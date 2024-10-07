@@ -9,6 +9,7 @@ I am currently rewriting the whole engine with Bevy. Stand by for the 1.0 releas
 
 ![App Screenshot](https://github.com/MountainLabsYT/Quark/blob/main/Screenshot%202024-09-14%20120502.png)
 
+![App Screenshot](https://github.com/user-attachments/assets/c019a9d6-795e-4cc2-a181-81d4e9a6526f)
 
 ## Features
 
