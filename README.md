@@ -12,8 +12,8 @@ I am currently rewriting the whole engine with Bevy. Stand by for the 1.0 releas
 
 ## Features
 
-- Raytraced Voxels
-- Cross platform
+- Raytraced Voxels (currently in rewrite)
+- Cross platform (currently in rewrite)
 
 
 ## Roadmap
