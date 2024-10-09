@@ -3,7 +3,7 @@
 
 A micro voxel engine written in rust with wgpu and runs on the Bevy game engine.
 
-I am currently rewriting the whole engine with Bevy. Stand by for the 1.0 release.
+I am currently rewriting the engine to work with the geese event system. Stand by for the 1.0 release.
 
 ## Screenshots
 
