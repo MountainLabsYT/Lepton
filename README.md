@@ -49,5 +49,5 @@ My youtube is MountainLabs
 
 ## Demo
 
-Coming Soon.
+The Demo is out now! Not much to see, but its a demo ¯\_(ツ)_/¯
 
