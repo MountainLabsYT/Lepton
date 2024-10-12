@@ -1,7 +1,7 @@
 
 # Quark
 
-A micro voxel engine written in rust with wgpu and runs on the Bevy game engine.
+A micro voxel engine written in rust with wgpu and runs on the Geese Event framework.
 
 I am currently rewriting the engine to work with the geese event system. Stand by for the 1.0 release.
 
