@@ -23,7 +23,7 @@ It should take about a week.
 - Voxel Physics (coming soon)
 - Path Traced Lighting (soonish)
 - Voxel World Gen 
-- Tutorials for api
+- Tutorials for the API
 
 ## Documentation
 
