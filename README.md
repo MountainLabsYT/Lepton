@@ -3,7 +3,8 @@
 
 A micro voxel engine written in rust with wgpu and runs on the Geese Event framework.
 
-I am currently rewriting the engine to work with the geese event system. Stand by for the 1.0 release.
+I'm currently refactoring the code to work with the Geese Event Framework.
+It should take about a week.
 
 ## Screenshots
 
@@ -20,9 +21,9 @@ I am currently rewriting the engine to work with the geese event system. Stand b
 ## Roadmap
 
 - Voxel Physics (coming soon)
-
+- Path Traced Lighting (soonish)
 - Voxel World Gen 
-
+- Tutorials for api
 
 ## Documentation
 
