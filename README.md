@@ -1,5 +1,5 @@
 
-# Quark
+# Lepton
 
 A micro voxel engine written in rust with wgpu and runs on the Geese Event framework.
 
