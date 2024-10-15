@@ -21,7 +21,7 @@ It should take about a week.
 ## Roadmap
 
 - Voxel Physics (coming soon)
-- Path Traced Lighting (soonish)
+- Per-Voxel Path Traced Lighting (soonish)
 - Voxel World Gen 
 - Tutorials for the API
 
