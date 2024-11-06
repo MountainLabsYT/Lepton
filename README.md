@@ -14,8 +14,9 @@ It should take about a week.
 
 ## Features
 
-- Raytraced Voxels (currently in rewrite)
 - Cross platform (currently in rewrite)
+- Yeah I mean, it opens wgpu lol.
+- More features coming soon, I promise :)
 
 
 ## Roadmap
@@ -24,6 +25,8 @@ It should take about a week.
 - Per-Voxel Path Traced Lighting (soonish)
 - Voxel World Gen 
 - Tutorials for the API
+- Fully modifyable voxel terrain
+- Meshed voxels
 
 ## Documentation
 
