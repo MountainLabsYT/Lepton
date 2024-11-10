@@ -12,8 +12,8 @@ Just finished refactoring the code with the geese event system: https://github.c
 
 ## Features
 
-- Cross platform (currently in rewrite)
-- Yeah I mean, it opens wgpu lol.
+- Cross platform ✔
+- Voxel raytracing (coming soon)
 - More features coming soon, I promise :)
 
 
