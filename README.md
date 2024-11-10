@@ -24,7 +24,7 @@ Just finished refactoring the code with the geese event system: https://github.c
 - Voxel World Gen 
 - Tutorials for the API
 - Fully modifyable voxel terrain
-- Meshed voxels
+- Raytraced voxels
 
 ## Documentation
 
