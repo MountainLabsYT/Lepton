@@ -51,6 +51,17 @@ Download the source files open the terminal and run:
 Feel free to make open an issue here on github :D
 
 
+
+## Timeline
+
+- rewrote the whole system with geese 11/1/24
+
+- switched to vulkan 11/15/24
+
+- I've been rewritting everything since lol.
+
+
+
 ## Demo
 
 The Demo is out now! Not much to see, but its a demo ¯\_(ツ)_/¯
