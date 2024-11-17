@@ -48,7 +48,7 @@ Download the source files open the terminal and run:
 
 ## Support
 
-My youtube is MountainLabs
+Feel free to make open an issue here on github :D
 
 
 ## Demo
