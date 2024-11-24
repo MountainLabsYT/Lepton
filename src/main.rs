@@ -1,25 +1,149 @@
 //This is the old code I called it mc for no good reason. it does nothing but is mod because otherwise vscode won't read it properly.
+#![allow(
+    dead_code,
+    unused_variables,
+    unused_imports,
+    clippy::manual_slice_size_calculation,
+    clippy::too_many_arguments,
+    clippy::unnecessary_wraps,
+    unused_assignments,
+    unused_must_use
+)]
+//dot vox stuff:
+use dot_vox::DotVoxData;
+use dot_vox::load;
+//textures
 mod mc;
+mod texture;
 
+//math
+use cgmath::num_traits::int;
+use cgmath::Vector3;
+
+//geese
 use geese::{
-    dependencies, Dependencies, Dependency, EventBuffer, EventHandler, EventHandlers, EventQueue,
-    GeeseContext, GeeseContextHandle, GeeseSystem, GeeseThreadPool, event_handlers,
+    dependencies, Dependencies, EventHandlers, EventQueue,
+    GeeseContext, GeeseContextHandle, GeeseSystem, event_handlers,
 };
-use wgpu::core::device;
+//use texture::Texture;
+//use wgpu::core::device;
 use winit::dpi::PhysicalSize;
-use winit::{event, event_loop, window};
+use std::collections::btree_map::Range;
 use std::sync::{Arc, Mutex};
-use std::{default, iter};
+use std::{default, iter, usize};
+//wgpu
 use wgpu::util::DeviceExt;
-use wgpu::{include_wgsl, Adapter, BindGroup, BindGroupLayout, Buffer, Device, Instance, Queue, RenderPipeline, Surface, SurfaceConfiguration};
-use winit::{
-    event::*,
+use wgpu::{Adapter, BindGroup, BindGroupLayout, Buffer, Device, Instance, PipelineCompilationOptions, Queue, RenderPipeline, Surface, SurfaceConfiguration, Texture, TextureView};
+//winit
+use winit::{ event_loop, event::*,
     event_loop::EventLoop,
     keyboard::{KeyCode, PhysicalKey},
     window::{Window, WindowBuilder},
 };
 
+//main loop
+fn main() {
+    println!("Program started.");
+    pollster::block_on(run());
+    println!("Program ended.");
+}
 
+
+mod on {
+    use winit::dpi::PhysicalSize;
+
+    pub struct NewFrame{
+    }
+
+    pub struct WindowResized{
+        pub physical_size: PhysicalSize<u32>,
+    }
+
+}
+
+
+async fn run() {
+    env_logger::init();
+    let event_loop = EventLoop::new().unwrap();
+    let window = Arc::new(WindowBuilder::new()
+        .with_title("Lepton Engine")
+        .build(&event_loop)
+        .unwrap());
+
+    let ctx = GeeseContext::default();
+    let ctx = Arc::new(Mutex::new(ctx));
+    
+    {
+        let mut ctx_guard = ctx.lock().unwrap();
+
+        ctx_guard.flush().with(geese::notify::add_system::<ParamSystem>());
+        ctx_guard.get_mut::<ParamSystem>().window = Some(window.clone());
+
+        ctx_guard.flush()
+            .with(geese::notify::add_system::<InstanceSystem>())
+            .with(geese::notify::add_system::<SurfaceSystem>())
+            .with(geese::notify::add_system::<DeviceSystem>())
+            .with(geese::notify::add_system::<CameraSystem>())
+            .with(geese::notify::add_system::<PipelineSystem>())
+            .with(geese::notify::add_system::<ResizeSystem>())
+            .with(geese::notify::add_system::<RenderSystem>())
+            .with(geese::notify::add_system::<ComputePipelineSystem>());
+            
+    }
+    
+    let render_system = {let ctx_guard = ctx.lock().unwrap(); ctx_guard.get::<RenderSystem>();};
+    
+
+    let event_loop_ctx = Arc::clone(&ctx);
+
+    let _ = 
+    event_loop.run(move |event, control_flow: &event_loop::EventLoopWindowTarget<()>| {
+        match event {
+            // Window-specific events
+            winit::event::Event::WindowEvent { event, window_id }
+                if window_id == window.id() =>
+            {
+                match event {
+                    // Handle close or escape key to exit
+                    WindowEvent::CloseRequested
+                    | WindowEvent::KeyboardInput {
+                        event:
+                            KeyEvent {
+                                state: ElementState::Pressed,
+                                physical_key: PhysicalKey::Code(KeyCode::Escape),
+                                ..
+                            },
+                        ..
+                    } => control_flow.exit(),
+
+                    // Handle window resize events
+                    WindowEvent::Resized(physical_size) => {
+                        log::info!("Window resized: {physical_size:?}");
+                        if let Ok(mut ctx_guard) = event_loop_ctx.lock() {
+                            ctx_guard.flush().with(on::WindowResized{physical_size});
+                        }
+                        //ctx.raise_event(|sys: &mut ResizeSystem| {
+                        //sys.handle_resize(physical_size);
+                        //});
+                    }
+
+                    // Request a redraw when needed
+                    WindowEvent::RedrawRequested => {
+                        
+                        if let Ok(mut ctx_guard) = event_loop_ctx.lock() {
+                            ctx_guard.flush().with(on::NewFrame{});
+                        }
+                        //ctx.raise_event(|sys: &mut RenderSystem| {
+                        //    sys.render();
+                        //});
+                    }
+                    _ => {}
+                }
+            } // Handle other events if necessary
+            _ => {}
+        }
+    });
+}
 
 #[derive(Default)]
 struct ParamSystem{
@@ -233,6 +357,183 @@ impl GeeseSystem for CameraSystem {
     }
 }
 
+struct TextureViewSystem {
+    texture_view: TextureView,
+    texture: Texture,
+}
+impl GeeseSystem for TextureViewSystem {
+    const DEPENDENCIES: Dependencies = dependencies()
+        .with::<DeviceSystem>()
+        .with::<ParamSystem>();
+        
+     fn new(ctx: GeeseContextHandle<Self>) -> Self {
+        let param_system = ctx.get::<ParamSystem>();
+        let window = param_system.window.clone().expect("Window not initialized");
+        let size = window.inner_size();
+        let device = &ctx.get::<DeviceSystem>().device;
+
+        let texture_size = wgpu::Extent3d {
+            width: size.width,
+            height: size.height,
+            depth_or_array_layers: 1,
+        };
+        let texture_desc = wgpu::TextureDescriptor {
+            label: Some("Raytracing Output Texture"),
+            size: texture_size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::STORAGE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
+            view_formats: Default::default(),
+        };
+        let texture = device.create_texture(&texture_desc);
+        let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        Self { texture_view, texture}
+     }
+
+ }
+
+
+struct ComputePipelineSystem{
+    compute_pipeline: wgpu::ComputePipeline,
+    compute_bind_group: wgpu::BindGroup,
+}
+impl GeeseSystem for ComputePipelineSystem {
+    const DEPENDENCIES: Dependencies = dependencies()
+        .with::<DeviceSystem>()
+        .with::<SurfaceSystem>()
+        .with::<InstanceSystem>()
+        .with::<CameraSystem>()
+        .with::<ParamSystem>()
+        .with::<TextureViewSystem>();
+
+    fn new(ctx: GeeseContextHandle<Self>) -> Self {
+        let device_system = ctx.get::<DeviceSystem>();
+        let device = &device_system.device;
+        let surface_system = ctx.get::<SurfaceSystem>();
+        let surface = &surface_system.surface;
+        //let instance_system = ctx.get::<InstanceSystem>();
+        //let instance = &instance_system.instance;
+        let adapter = &surface_system.adapter;
+        let param_system = ctx.get::<ParamSystem>();
+        let window = param_system.window.clone().expect("Window not initialized");
+        let size = window.inner_size();
+        let texture_view = &ctx.get::<TextureViewSystem>().texture_view;
+        let camera_system = ctx.get::<CameraSystem>();
+        let camera_buffer = &camera_system.buffer;
+
+
+
+        let compute_shader = device.create_shader_module(wgpu::include_wgsl!("shaders/compute_trace.wgsl"));
+        
+        let surface_caps = surface.get_capabilities(&adapter);
+
+        let surface_format = surface_caps
+        .formats
+        .iter()
+        .copied()
+        .find(|f| f.is_srgb())
+        .unwrap_or(surface_caps.formats[0]);
+
+
+        let config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format: surface_format,
+            width: size.width,
+            height: size.height,
+            present_mode: surface_caps.present_modes[0],
+            alpha_mode: surface_caps.alpha_modes[0],
+            desired_maximum_frame_latency: 2,
+            view_formats: vec![],
+        };
+
+        
+        let camera_bind_group_layout =
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+            label: Some("camera_bind_group_layout"),
+        });
+
+        let compute_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("Compute Bind Group Layout"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::StorageTexture {
+                    access: wgpu::StorageTextureAccess::WriteOnly,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                },
+                count: None,
+            },
+
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer { 
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None
+            },
+                count: None,
+            },
+        ],
+    });
+
+
+        let compute_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Compute Pipeline Layout"),
+            bind_group_layouts: &[&compute_bind_group_layout], // Bind group layout created earlier
+            push_constant_ranges: &[],
+        });
+        
+        let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("Compute Pipeline"),
+            layout: Some(&compute_pipeline_layout),
+            module: &compute_shader,
+            entry_point: "cs_main",
+            cache: None,
+            compilation_options: Default::default(),
+            
+        });
+
+        let compute_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Compute Bind Group"),
+            layout: &compute_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&texture_view),
+            }, wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &camera_buffer,
+                    offset: 0,
+                    size: None
+                }),
+            },],
+        });
+
+        
+
+
+        Self { compute_pipeline, compute_bind_group }
+    }
+}
+
 //Vertex definition.
 //Used in rendering the final image.
 //No other use case.
@@ -299,6 +600,7 @@ struct PipelineSystem {
     vertex_buffer: Buffer,
     config: SurfaceConfiguration,
     size: PhysicalSize<u32>,
+    /*depth_texture: Arc<Texture>,*/
 }
 impl GeeseSystem for PipelineSystem {
     const DEPENDENCIES: Dependencies = dependencies()
@@ -329,8 +631,14 @@ impl GeeseSystem for PipelineSystem {
         });
 
 
+    
+        
+       
 
-       let shader = device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
+
+
+
+       let shader = device.create_shader_module(wgpu::include_wgsl!("shaders/fragment_render.wgsl"));
 
        let surface_caps = surface.get_capabilities(&adapter);
 
@@ -341,7 +649,7 @@ impl GeeseSystem for PipelineSystem {
        .find(|f| f.is_srgb())
        .unwrap_or(surface_caps.formats[0]);
 
-       let config = wgpu::SurfaceConfiguration {
+        let config = wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
         format: surface_format,
         width: size.width,
@@ -351,7 +659,7 @@ impl GeeseSystem for PipelineSystem {
         desired_maximum_frame_latency: 2,
         view_formats: vec![],
     };
-
+    //let depth_texture = texture::Texture::create_depth_texture(&device, &config, "depth_texture");
     let camera_bind_group_layout =
     device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         entries: &[wgpu::BindGroupLayoutEntry {
@@ -425,7 +733,7 @@ impl GeeseSystem for PipelineSystem {
     
         surface.configure(&device, &config);
 
-        Self {pipeline, vertex_buffer, config, size}
+        Self {pipeline, vertex_buffer, config, size, /*depth_texture: Arc::new(depth_texture)*/}
     }
 }
 
@@ -440,7 +748,9 @@ impl GeeseSystem for RenderSystem {
         .with::<DeviceSystem>()
         .with::<PipelineSystem>()
         .with::<CameraSystem>()
-        .with::<SurfaceSystem>();
+        .with::<SurfaceSystem>()
+        .with::<ComputePipelineSystem>()
+        .with::<ParamSystem>();
 
     const EVENT_HANDLERS: EventHandlers<Self> = event_handlers().with(Self::call_render);
 
@@ -461,7 +771,7 @@ impl RenderSystem {
         let device = &device_system.device;
         let pipeline_system = self.ctx.get::<PipelineSystem>();
         let camera_system = self.ctx.get::<CameraSystem>();
-
+        /*let depth_texture = Arc::clone(&pipeline_system.depth_texture);*/
         let surface_system = self.ctx.get::<SurfaceSystem>();
         let surface = &surface_system.surface;
 
@@ -470,10 +780,29 @@ impl RenderSystem {
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
+        let compute_system = &self.ctx.get::<ComputePipelineSystem>();
+        let compute_pipeline = &compute_system.compute_pipeline;
+        let compute_bind_group = &compute_system.compute_bind_group;
+
+        let param_system = &self.ctx.get::<ParamSystem>();
+        let window = param_system.window.clone().expect("Window not initialized");
+        let size = window.inner_size();
+
+
         let mut encoder = device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Render Encoder"),
             });
+
+        {
+            let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Compute Pass"),
+                timestamp_writes: Default::default(), });
+                compute_pass.set_pipeline(&compute_pipeline);
+                compute_pass.set_bind_group(0, &compute_bind_group, &[]);
+                compute_pass.dispatch_workgroups((&size.width + 15) / 16, (&size.height + 15) / 16, 1);
+        }
+        
 
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -531,117 +860,185 @@ impl GeeseSystem for ResizeSystem {
 
 impl ResizeSystem{
     fn resize(&mut self, event: &on::WindowResized){
-        let pipeline_system = self.ctx.get::<PipelineSystem>();
+        
+
+        let surface_system = self.ctx.get::<SurfaceSystem>();
+        let surface = &surface_system.surface;
+        let device_system = self.ctx.get::<DeviceSystem>();
+        let device = &device_system.device;
+        let /*mut*/ pipeline_system = self.ctx.get::<PipelineSystem>();
+        let mut config = pipeline_system.config.clone();
         let mut size = pipeline_system.size;
         let new_size = event.physical_size;
-        let mut config = pipeline_system.config.clone();
-        let surface = &self.ctx.get::<SurfaceSystem>().surface;
-        let device = &self.ctx.get::<DeviceSystem>().device;
 
+        
         if new_size.width > 0 && new_size.height > 0 {
+            
             size = new_size;
             config.width = new_size.width;
             config.height = new_size.height;
             surface.configure(&device, &config);
+            
+            
+        }
+        
+    }
+}
+
+//
+// structs
+//
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Zeroable, Pod)]
+pub struct Voxel {
+    pub color: [u8; 4], // Color as RGBA (u8 for compact representation)
+    pub material: u8,  // Material ID
+}
+
+impl Voxel {
+    pub fn new(color: [u8; 4], material: u8) -> Self {
+        Self { color, material }
+    }
+}
+
+/// A Brick containing an array of voxels and a flag for whether it contains data.
+#[derive(Debug, Clone)]
+pub struct Brick {
+    pub voxels: Vec<Voxel>,
+    pub has_voxels: bool,
+}
+
+impl Brick {
+    pub fn new() -> Self {
+        Self {
+            voxels: Vec::new(),
+            has_voxels: false,
+        }
+    }
+
+    pub fn with_voxels(voxels: Vec<Voxel>) -> Self {
+        Self {
+            has_voxels: !voxels.is_empty(),
+            voxels,
+        }
+    }
+}
+
+/// A BrickMap holding an array of bricks.
+#[derive(Debug, Clone)]
+pub struct BrickMap {
+    pub bricks: Vec<Brick>,
+}
+
+impl BrickMap {
+    pub fn new() -> Self {
+        Self { bricks: Vec::new() }
+    }
+
+    pub fn with_bricks(bricks: Vec<Brick>) -> Self {
+        Self { bricks }
+    }
+}
+
+/// Reads a .vox file and converts it into a BrickMap.
+pub fn vox_to_brickmap(file_path: &str) -> Result<BrickMap, Box<dyn std::error::Error>> {
+    // Load .vox data
+    let dot_vox_data = load(file_path)?;
+    let mut brick_map = BrickMap::new();
+
+    // Process models in the .vox file
+    for model in dot_vox_data.models {
+        // HashMap for storing bricks, keyed by position
+        let mut bricks_by_position: HashMap<(i32, i32, i32), Vec<Voxel>> = HashMap::new();
+
+        // Populate bricks from voxel data
+        for voxel in model.voxels {
+            let position = (
+                voxel.x as i32 / 8, // Assume brick size is 8x8x8
+                voxel.y as i32 / 8,
+                voxel.z as i32 / 8,
+            );
+            let local_x = voxel.x % 8;
+            let local_y = voxel.y % 8;
+            let local_z = voxel.z % 8;
+
+            // Map color index to RGBA and material (default values)
+            let color_index = voxel.i as usize;
+            let color = dot_vox_data.palette.get(color_index)
+                .copied()
+                .unwrap_or(0x000000FF); // Default to black with full alpha
+
+            let rgba = [
+                (color >> 24) as u8, // Red
+                (color >> 16) as u8, // Green
+                (color >> 8) as u8,  // Blue
+                (color) as u8,       // Alpha
+            ];
+            let material = 0; // Placeholder material ID
+
+            let voxel = Voxel::new(rgba, material);
+            bricks_by_position
+                .entry(position)
+                .or_insert_with(Vec::new)
+                .push(voxel);
         }
 
-    }
-}
-
-fn main() {
-    pollster::block_on(run());
-}
-
-mod on {
-    use winit::dpi::PhysicalSize;
-
-    pub struct NewFrame{
-    }
-
-    pub struct WindowResized{
-        pub physical_size: PhysicalSize<u32>,
-    }
-
-}
-
-
-async fn run() {
-    env_logger::init();
-    let event_loop = EventLoop::new().unwrap();
-    let window = Arc::new(WindowBuilder::new()
-        .with_title("Lepton Engine")
-        .build(&event_loop)
-        .unwrap());
-
-    let ctx = GeeseContext::default();
-    let ctx = Arc::new(Mutex::new(ctx));
-    
-    {
-        let mut ctx_guard = ctx.lock().unwrap();
-
-        ctx_guard.flush().with(geese::notify::add_system::<ParamSystem>());
-        ctx_guard.get_mut::<ParamSystem>().window = Some(window.clone());
-
-        ctx_guard.flush()
-            .with(geese::notify::add_system::<InstanceSystem>())
-            .with(geese::notify::add_system::<SurfaceSystem>())
-            .with(geese::notify::add_system::<DeviceSystem>())
-            .with(geese::notify::add_system::<CameraSystem>())
-            .with(geese::notify::add_system::<PipelineSystem>())
-            .with(geese::notify::add_system::<RenderSystem>())
-            .with(geese::notify::add_system::<ResizeSystem>());
-    }
-    
-    let render_system = {let ctx_guard = ctx.lock().unwrap(); ctx_guard.get::<RenderSystem>();};
-    
-
-    let event_loop_ctx = Arc::clone(&ctx);
-
-    let _ = 
-    event_loop.run(move |event, control_flow: &event_loop::EventLoopWindowTarget<()>| {
-        match event {
-            // Window-specific events
-            winit::event::Event::WindowEvent { event, window_id }
-                if window_id == window.id() =>
-            {
-                match event {
-                    // Handle close or escape key to exit
-                    WindowEvent::CloseRequested
-                    | WindowEvent::KeyboardInput {
-                        event:
-                            KeyEvent {
-                                state: ElementState::Pressed,
-                                physical_key: PhysicalKey::Code(KeyCode::Escape),
-                                ..
-                            },
-                        ..
-                    } => control_flow.exit(),
-
-                    // Handle window resize events
-                    WindowEvent::Resized(physical_size) => {
-                        log::info!("Window resized: {physical_size:?}");
-                        if let Ok(mut ctx_guard) = event_loop_ctx.lock() {
-                            ctx_guard.flush().with(on::WindowResized{physical_size});
-                        }
-                        //ctx.raise_event(|sys: &mut ResizeSystem| {
-                        //sys.handle_resize(physical_size);
-                        //});
-                    }
-
-                    // Request a redraw when needed
-                    WindowEvent::RedrawRequested => {
-                        
-                        if let Ok(mut ctx_guard) = event_loop_ctx.lock() {
-                            ctx_guard.flush().with(on::NewFrame{});
-                        }
-                        //ctx.raise_event(|sys: &mut RenderSystem| {
-                        //    sys.render();
-                        //});
-                    }
-                    _ => {}
-                }
-            } // Handle other events if necessary
-            _ => {}
+        // Create bricks from the hash map
+        for (_, voxels) in bricks_by_position {
+            brick_map.bricks.push(Brick::with_voxels(voxels));
         }
-    });
+    }
+
+    Ok(brick_map)
+}
+
+
+/// A structure to hold a flat array of voxels without brick organization.
+#[derive(Debug, Clone)]
+pub struct FlatVoxelArray {
+    pub voxels: Vec<Voxel>,
+}
+
+impl FlatVoxelArray {
+    /// Create a new, empty FlatVoxelArray.
+    pub fn new() -> Self {
+        Self { voxels: Vec::new() }
+    }
+
+    /// Create a FlatVoxelArray initialized with a given set of voxels.
+    pub fn with_voxels(voxels: Vec<Voxel>) -> Self {
+        Self { voxels }
+    }
+}
+
+/// Reads a .vox file and converts it into a FlatVoxelArray.
+pub fn vox_to_flat_voxel_array(file_path: &str) -> Result<FlatVoxelArray, Box<dyn std::error::Error>> {
+    // Load .vox data
+    let dot_vox_data = load(file_path)?;
+    let mut flat_voxels = Vec::new();
+
+    // Process models in the .vox file
+    for model in dot_vox_data.models {
+        for voxel in model.voxels {
+            // Map color index to RGBA and material (default values)
+            let color_index = voxel.i as usize;
+            let color = dot_vox_data.palette.get(color_index)
+                .copied()
+                .unwrap_or(0x000000FF); // Default to black with full alpha
+
+            let rgba = [
+                (color >> 24) as u8, // Red
+                (color >> 16) as u8, // Green
+                (color >> 8) as u8,  // Blue
+                (color) as u8,       // Alpha
+            ];
+            let material = 0; // Placeholder material ID
+
+            // Add voxel to flat array
+            flat_voxels.push(Voxel::new(rgba, material));
+        }
+    }
+
+    Ok(FlatVoxelArray::with_voxels(flat_voxels))
 }
