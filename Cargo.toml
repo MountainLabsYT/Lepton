@@ -12,3 +12,6 @@ bytemuck = { version = "1.16", features = ["derive"] }
 log = "0.4"
 pollster = "0.3"
 binary-greedy-meshing = "0.3.6"
+dot_vox = "5.1.1"
+cgmath = "0.18.0"
+anyhow = "1.0.93"
