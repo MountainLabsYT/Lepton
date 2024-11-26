@@ -9,6 +9,8 @@
     unused_assignments,
     unused_must_use
 )]
+use bytemuck::Zeroable;
+use bytemuck::Pod;
 //dot vox stuff:
 use dot_vox::DotVoxData;
 use dot_vox::load;
@@ -29,9 +31,11 @@ use geese::{
 //use wgpu::core::device;
 use winit::dpi::PhysicalSize;
 use std::collections::btree_map::Range;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::{default, iter, usize};
 //wgpu
+use dot_vox::Color;
 use wgpu::util::DeviceExt;
 use wgpu::{Adapter, BindGroup, BindGroupLayout, Buffer, Device, Instance, PipelineCompilationOptions, Queue, RenderPipeline, Surface, SurfaceConfiguration, Texture, TextureView};
 //winit
@@ -596,10 +600,11 @@ const VERTICES: &[Vertex] = &[
 ];
 
 struct PipelineSystem {
-    pipeline: RenderPipeline,
+    render_pipeline: RenderPipeline,
     vertex_buffer: Buffer,
     config: SurfaceConfiguration,
     size: PhysicalSize<u32>,
+    fragment_bind_group: BindGroup,
     /*depth_texture: Arc<Texture>,*/
 }
 impl GeeseSystem for PipelineSystem {
@@ -608,6 +613,7 @@ impl GeeseSystem for PipelineSystem {
         .with::<SurfaceSystem>()
         .with::<InstanceSystem>()
         .with::<CameraSystem>()
+        .with::<TextureViewSystem>()
         .with::<ParamSystem>();
 
     fn new(ctx: GeeseContextHandle<Self>) -> Self {
@@ -621,6 +627,7 @@ impl GeeseSystem for PipelineSystem {
        let param_system = ctx.get::<ParamSystem>();
        let window = param_system.window.clone().expect("Window not initialized");
        let size = window.inner_size();
+       let texture_view = &ctx.get::<TextureViewSystem>().texture_view;
        //let camera_system = ctx.get::<CameraSystem>();
        
 
@@ -660,7 +667,7 @@ impl GeeseSystem for PipelineSystem {
         view_formats: vec![],
     };
     //let depth_texture = texture::Texture::create_depth_texture(&device, &config, "depth_texture");
-    let camera_bind_group_layout =
+    /*let camera_bind_group_layout =
     device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         entries: &[wgpu::BindGroupLayoutEntry {
             binding: 0,
@@ -673,17 +680,76 @@ impl GeeseSystem for PipelineSystem {
             count: None,
         }],
         label: Some("camera_bind_group_layout"),
+    });*/
+
+
+    let fragment_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("Fragment Bind Group Layout"),
+        entries: &[
+            // Texture sampler
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+            // Texture view
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+        ],
     });
 
+
+    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("Sampler"),
+        address_mode_u: wgpu::AddressMode::ClampToEdge,
+        address_mode_v: wgpu::AddressMode::ClampToEdge,
+        address_mode_w: wgpu::AddressMode::ClampToEdge,
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        mipmap_filter: wgpu::FilterMode::Nearest,
+        lod_min_clamp: Default::default(),
+        lod_max_clamp: Default::default(),
+        compare: Default::default(),
+        anisotropy_clamp: 1,
+        border_color: Default::default(),
+        
+    });
+    
+    let fragment_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Fragment Bind Group"),
+        layout: &fragment_bind_group_layout,
+        entries: &[
+            // Bind the sampler
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Sampler(&sampler),
+            },
+            // Bind the texture view
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(&texture_view),
+            },
+        ],
+    });
+    
 
        let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Render Pipeline Layout"),
-                bind_group_layouts: &[&camera_bind_group_layout],
+                bind_group_layouts: &[&fragment_bind_group_layout],
                 push_constant_ranges: &[],
             });
 
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Render Pipeline"),
             layout: Some(&render_pipeline_layout),
             vertex: wgpu::VertexState {
@@ -733,7 +799,7 @@ impl GeeseSystem for PipelineSystem {
     
         surface.configure(&device, &config);
 
-        Self {pipeline, vertex_buffer, config, size, /*depth_texture: Arc::new(depth_texture)*/}
+        Self {render_pipeline, vertex_buffer, config, size, fragment_bind_group/*depth_texture: Arc::new(depth_texture)*/}
     }
 }
 
@@ -789,6 +855,8 @@ impl RenderSystem {
         let size = window.inner_size();
 
 
+        let fragment_bind_group = &pipeline_system.fragment_bind_group;
+
         let mut encoder = device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Render Encoder"),
@@ -825,8 +893,8 @@ impl RenderSystem {
                 timestamp_writes: None,
             });
 
-            render_pass.set_pipeline(&pipeline_system.pipeline);
-            render_pass.set_bind_group(0, &camera_system.camera_bind_group, &[]);
+            render_pass.set_pipeline(&pipeline_system.render_pipeline);
+            render_pass.set_bind_group(0, &fragment_bind_group, &[]);
             render_pass.set_vertex_buffer(0, pipeline_system.vertex_buffer.slice(..));
             
             render_pass.draw(0..6, 0..1);
@@ -926,8 +994,10 @@ impl Brick {
 }
 
 /// A BrickMap holding an array of bricks.
+//#[repr(C)]
 #[derive(Debug, Clone)]
 pub struct BrickMap {
+    //pub bricks: [Brick; 4096],
     pub bricks: Vec<Brick>,
 }
 
@@ -964,16 +1034,15 @@ pub fn vox_to_brickmap(file_path: &str) -> Result<BrickMap, Box<dyn std::error::
             let local_z = voxel.z % 8;
 
             // Map color index to RGBA and material (default values)
+            let palette = &dot_vox_data.palette;
             let color_index = voxel.i as usize;
-            let color = dot_vox_data.palette.get(color_index)
-                .copied()
-                .unwrap_or(0x000000FF); // Default to black with full alpha
-
+            
+            let color = palette.get(color_index).unwrap_or(&Color { r: 0, g: 0, b: 0, a: 255 }); // Default to black with full alpha
             let rgba = [
-                (color >> 24) as u8, // Red
-                (color >> 16) as u8, // Green
-                (color >> 8) as u8,  // Blue
-                (color) as u8,       // Alpha
+                color.r, // Red
+                color.g, // Green
+                color.b,  // Blue
+                color.a,       // Alpha
             ];
             let material = 0; // Placeholder material ID
 
@@ -1021,17 +1090,16 @@ pub fn vox_to_flat_voxel_array(file_path: &str) -> Result<FlatVoxelArray, Box<dy
     // Process models in the .vox file
     for model in dot_vox_data.models {
         for voxel in model.voxels {
+            let palette = &dot_vox_data.palette;
             // Map color index to RGBA and material (default values)
             let color_index = voxel.i as usize;
-            let color = dot_vox_data.palette.get(color_index)
-                .copied()
-                .unwrap_or(0x000000FF); // Default to black with full alpha
+            let color = palette.get(color_index).unwrap_or(&Color { r: 0, g: 0, b: 0, a: 255 }); // Default to black with full alphaack with full alpha // Default to black with full alpha
 
             let rgba = [
-                (color >> 24) as u8, // Red
-                (color >> 16) as u8, // Green
-                (color >> 8) as u8,  // Blue
-                (color) as u8,       // Alpha
+                color.r, // Red
+                color.g, // Green
+                color.b,  // Blue
+                color.a,       // Alpha
             ];
             let material = 0; // Placeholder material ID
 
