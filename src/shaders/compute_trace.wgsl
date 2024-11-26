@@ -55,6 +55,26 @@ fn ray_box_intersection(rayOrigin: vec3<f32>, rayDirection: vec3<f32>, boxMin: v
 }
 
 
+// Voxel data
+struct Voxel {
+    color: vec4<f32>, // holds the color of the voxel.
+}
+
+struct Brick {
+    voxels: array<Voxel, 512>,
+    has_voxels: bool, //8x8x8 is 512.
+}
+
+struct BrickMap {
+    bricks: array<Brick, 4096>, // 16x16x16 = 4096 bricks
+};
+
+
+
+
+
+
+
 @group(0) @binding(0)
 var output_texture: texture_storage_2d<rgba8unorm, write>;
 
@@ -77,9 +97,9 @@ fn cs_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
         // Simple gradient color based on position for testing
         let color = vec4<f32>(
-            f32(coords.x) / f32(resolution.x),
-            f32(coords.y) / f32(resolution.y),
-            0.5,
+            f32(coords.x) / f32(resolution.x) - 0.5,
+            f32(coords.y) / f32(resolution.y) + 0.5,
+            1.0,
             1.0
         );
         textureStore(output_texture, coords, color);

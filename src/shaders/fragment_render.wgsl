@@ -2,20 +2,11 @@
 
 
 
-
-
-struct Camera {
-    position: vec3<f32>,   // 12 bytes + 4 bytes padding
-    fov: f32,         // Manually add padding to align the next field
-    direction: vec3<f32>,  // 12 bytes + 4 bytes padding
-    padding2: f32,         // Manually add padding to align the next field
-    up: vec3<f32>,         // 12 bytes + 4 bytes padding
-    padding3: f32,         // Manually add padding to align the next field
-};
-
 @group(0) @binding(0)
-var<uniform> camera: Camera; // Binding camera data
+var texture_sampler: sampler;
 
+@group(0) @binding(1)
+var input_texture: texture_2d<f32>;
 
 
 
@@ -49,7 +40,8 @@ fn vs_main(
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    let color = textureSample(input_texture, texture_sampler, in.uv); // Sample the texture
     // Retrieve UV coordinates from the input structure
-    return vec4<f32>(in.uv,1.0,1.0);
+    return color;
 
 }
