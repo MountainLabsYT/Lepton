@@ -540,7 +540,7 @@ impl GeeseSystem for ComputePipelineSystem {
 
 //Vertex definition.
 //Used in rendering the final image.
-//No other use case.
+//No other use use.
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -957,156 +957,62 @@ impl ResizeSystem{
 // structs
 //
 
-#[repr(C)]
+#[repr(C, align(8))]
 #[derive(Copy, Clone, Debug, Zeroable, Pod)]
 pub struct Voxel {
     pub color: [u8; 4], // Color as RGBA (u8 for compact representation)
-    pub material: u8,  // Material ID
+    pub material: u32,  // Material ID
 }
 
 impl Voxel {
-    pub fn new(color: [u8; 4], material: u8) -> Self {
+    pub fn new(color: [u8; 4], material: u32) -> Self {
         Self { color, material }
     }
 }
 
 /// A Brick containing an array of voxels and a flag for whether it contains data.
-#[derive(Debug, Clone)]
+#[repr(C, align(8))]
+#[derive(Debug, Clone, Zeroable, Pod, Copy)]
 pub struct Brick {
-    pub voxels: Vec<Voxel>,
-    pub has_voxels: bool,
+    //pub voxels: Vec<Voxel>,
+    pub voxels: [Voxel; 512],
+    //pub padding: [u8; 7],
 }
 
-impl Brick {
-    pub fn new() -> Self {
-        Self {
-            voxels: Vec::new(),
-            has_voxels: false,
+use noise::{NoiseFn, Perlin, Seedable};
+impl Brick{
+    fn new() -> Self{
+        Self{
+            voxels: [Voxel::new([0, 0, 0, 0], 0); 512],
+            //voxels: Vec::new(),
         }
     }
 
-    pub fn with_voxels(voxels: Vec<Voxel>) -> Self {
-        Self {
-            has_voxels: !voxels.is_empty(),
-            voxels,
-        }
-    }
 }
 
-/// A BrickMap holding an array of bricks.
-//#[repr(C)]
-#[derive(Debug, Clone)]
 pub struct BrickMap {
-    //pub bricks: [Brick; 4096],
-    pub bricks: Vec<Brick>,
+    pub bricks: Vec<Brick>, // A flat array of brick data, not indexable do to its sparse nature.
+    pub indices: Vec<i32>, // Aka the bitmap but its not bits lol.
+    pub position: Vec<i32>,
+
 }
 
-impl BrickMap {
-    pub fn new() -> Self {
-        Self { bricks: Vec::new() }
-    }
-
-    pub fn with_bricks(bricks: Vec<Brick>) -> Self {
-        Self { bricks }
-    }
-}
-
-/// Reads a .vox file and converts it into a BrickMap.
-pub fn vox_to_brickmap(file_path: &str) -> Result<BrickMap, Box<dyn std::error::Error>> {
-    // Load .vox data
-    let dot_vox_data = load(file_path)?;
-    let mut brick_map = BrickMap::new();
-
-    // Process models in the .vox file
-    for model in dot_vox_data.models {
-        // HashMap for storing bricks, keyed by position
-        let mut bricks_by_position: HashMap<(i32, i32, i32), Vec<Voxel>> = HashMap::new();
-
-        // Populate bricks from voxel data
-        for voxel in model.voxels {
-            let position = (
-                voxel.x as i32 / 8, // Assume brick size is 8x8x8
-                voxel.y as i32 / 8,
-                voxel.z as i32 / 8,
-            );
-            let local_x = voxel.x % 8;
-            let local_y = voxel.y % 8;
-            let local_z = voxel.z % 8;
-
-            // Map color index to RGBA and material (default values)
-            let palette = &dot_vox_data.palette;
-            let color_index = voxel.i as usize;
-            
-            let color = palette.get(color_index).unwrap_or(&Color { r: 0, g: 0, b: 0, a: 255 }); // Default to black with full alpha
-            let rgba = [
-                color.r, // Red
-                color.g, // Green
-                color.b,  // Blue
-                color.a,       // Alpha
-            ];
-            let material = 0; // Placeholder material ID
-
-            let voxel = Voxel::new(rgba, material);
-            bricks_by_position
-                .entry(position)
-                .or_insert_with(Vec::new)
-                .push(voxel);
-        }
-
-        // Create bricks from the hash map
-        for (_, voxels) in bricks_by_position {
-            brick_map.bricks.push(Brick::with_voxels(voxels));
-        }
-    }
-
-    Ok(brick_map)
-}
-
-
-/// A structure to hold a flat array of voxels without brick organization.
-#[derive(Debug, Clone)]
-pub struct FlatVoxelArray {
-    pub voxels: Vec<Voxel>,
-}
-
-impl FlatVoxelArray {
-    /// Create a new, empty FlatVoxelArray.
-    pub fn new() -> Self {
-        Self { voxels: Vec::new() }
-    }
-
-    /// Create a FlatVoxelArray initialized with a given set of voxels.
-    pub fn with_voxels(voxels: Vec<Voxel>) -> Self {
-        Self { voxels }
+impl BrickMap{
+    fn new() -> Self{
+        Self { bricks: Vec::new(), indices: Vec::new(), position: Vec::new() }
     }
 }
 
-/// Reads a .vox file and converts it into a FlatVoxelArray.
-pub fn vox_to_flat_voxel_array(file_path: &str) -> Result<FlatVoxelArray, Box<dyn std::error::Error>> {
-    // Load .vox data
-    let dot_vox_data = load(file_path)?;
-    let mut flat_voxels = Vec::new();
+pub struct ChunkingSystem{
+    pub brickmaps: Vec<BrickMap>,
+}
 
-    // Process models in the .vox file
-    for model in dot_vox_data.models {
-        for voxel in model.voxels {
-            let palette = &dot_vox_data.palette;
-            // Map color index to RGBA and material (default values)
-            let color_index = voxel.i as usize;
-            let color = palette.get(color_index).unwrap_or(&Color { r: 0, g: 0, b: 0, a: 255 }); // Default to black with full alphaack with full alpha // Default to black with full alpha
+//
+// Functions
+//
 
-            let rgba = [
-                color.r, // Red
-                color.g, // Green
-                color.b,  // Blue
-                color.a,       // Alpha
-            ];
-            let material = 0; // Placeholder material ID
-
-            // Add voxel to flat array
-            flat_voxels.push(Voxel::new(rgba, material));
-        }
-    }
-
-    Ok(FlatVoxelArray::with_voxels(flat_voxels))
+pub fn generate_height(x: f64, y: f64, z: f64) -> f64{
+    let perlin = Perlin::new(1);
+    let val: f64 = perlin.get([x, y, z]);
+    return val;
 }
