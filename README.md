@@ -56,7 +56,7 @@ Feel free to make open an issue here on github :D
 
 - switched to vulkan 11/15/24
 
-- I've been rewritting everything since lol.
+- 12/2/24 Nah back to wgpu lol.
 
 
 
