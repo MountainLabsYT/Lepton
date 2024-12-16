@@ -58,6 +58,8 @@ Feel free to make open an issue here on github :D
 
 - I've been rewritting everything since lol.
 
+- I did not switch to vulkan, but instead I kept writting in wgpu, I almost have voxels again >:)
+
 
 
 ## Demo
