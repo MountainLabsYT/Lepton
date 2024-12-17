@@ -134,17 +134,33 @@ fn generate_ray_direction(
     return normalize(pixel_dir + camera_dir);
 }
 
+fn calculate_ray_direction(camera_dir: vec3<f32>, camera_up: vec3<f32>, uv: vec2<f32>, fov: f32, aspect: f32) -> vec3<f32> {
+    // Remap UV from [0, 1] to [-1, 1]
+    let remapped_uv: vec2<f32> = (uv - vec2<f32>(0.5, 0.5)) * 2.0;
+
+    // Half FOV tangent for scaling
+    let scale: f32 = tan(fov * 0.5);
+
+    // Adjust UV by FOV and aspect ratio
+    let u: f32 = remapped_uv.x * aspect * scale;
+    let v: f32 = remapped_uv.y * scale;
+
+    // Calculate camera basis vectors
+    let forward: vec3<f32> = normalize(camera_dir); // Forward direction (normalized)
+    let right: vec3<f32> = normalize(cross(forward, camera_up)); // Right direction
+    let up: vec3<f32> = normalize(cross(right, forward)); // Recompute up direction to ensure orthogonality
+
+    // Combine directions to calculate the final ray direction
+    let ray_dir: vec3<f32> = normalize(u * right + v * up + forward);
+
+    return ray_dir;
+}
 
 // @group(1) @binding(0)
 // var<storage, read> brick_array: array<Brick>;
 
 // @group(1) @binding(1)
 // var<storage, read> indices_array: array<i32>;
-
-
-
-
-
 
 @group(0) @binding(0)
 var output_texture: texture_storage_2d<rgba8unorm, write>;
@@ -168,7 +184,7 @@ fn cs_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let uv = vec2<f32>(vec2<f32>(coords) / vec2<f32>(resolution));
 
     
-    let ray_dir = generate_ray_direction(camera.direction, uv, camera.fov, camera.aspect);
+    let ray_dir = calculate_ray_direction(camera.direction, camera.up, uv, camera.fov, camera.aspect);
 
     let box_min = vec3<f32>(-0.5,-0.5,-0.5,);
     let box_max = vec3<f32>(-0.5,-0.5,-0.5,);
@@ -184,14 +200,14 @@ fn cs_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         // );
     
     //var color = vec4<f32>(vec4<f32>(camera.direction.x));
-    var color = vec4<f32>(camera.direction.xyzz);
+    var color = vec4<f32>(uv.xyxy);
     if (intersection.hit) {
         color = vec4<f32>(0.0, 0.0, 0.0, 1.0);
     }  
     
-    if (camera.direction.x == 0.0 && camera.direction.y == 0.0 && camera.direction.z == 0.0) {
-        color = vec4<f32>(1.0, 0.0, 0.0, 1.0); // Return red if invalid
-    }
+    // if (camera.direction.x == 0.0 && camera.direction.y == 0.0 && camera.direction.z == 0.0) {
+    //     color = vec4<f32>(1.0, 0.0, 0.0, 1.0); // Return red if invalid
+    // }
     // color = vec4<f32>(
     //     camera.direction.x * 0.5 + 0.5, // Map to visible range [0, 1]
     //     camera.direction.y * 0.5 + 0.5,
