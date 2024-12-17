@@ -54,6 +54,8 @@ use winit::{ event_loop, event::*,
 
 //main loop
 fn main() {
+    println!("Size of CameraBuffer: {} bytes", std::mem::size_of::<CameraBuffer>());
+    println!("Alignment of CameraBuffer: {} bytes", std::mem::align_of::<CameraBuffer>());
     println!("Program started.");
     pollster::block_on(run());
     println!("Program ended.");
@@ -123,6 +125,25 @@ async fn run() {
     let _ = 
     event_loop.run(move |event, control_flow: &event_loop::EventLoopWindowTarget<()>| {
         match event {
+
+            winit::event::Event::DeviceEvent { event, .. } => {
+                if let DeviceEvent::MouseMotion { delta } = event {
+                    let dx = delta.0;
+                    let dy = delta.1;
+                    let delta_x= dx as f32;
+                    let delta_y= dy as f32;
+                    
+                    if let Ok(mut ctx_guard) = event_loop_ctx.lock() {
+                        ctx_guard.flush().with(on::MouseMoved{delta_x, delta_y});
+                    }
+                    
+                    //camera.update_rotation(delta_x as f32, delta_y as f32);
+                    //log::debug!("Yaw: {}, Pitch: {}", dx, dy);
+                    
+                    
+                }
+            }
+
             // Window-specific events
             winit::event::Event::WindowEvent { event, window_id }
                 if window_id == window.id() =>
@@ -155,6 +176,7 @@ async fn run() {
                     WindowEvent::RedrawRequested => {
                         
                         if let Ok(mut ctx_guard) = event_loop_ctx.lock() {
+                            window.request_redraw();
                             ctx_guard.flush().with(on::NewFrame{});
                         }
                         //ctx.raise_event(|sys: &mut RenderSystem| {
@@ -170,24 +192,6 @@ async fn run() {
                 
 
             } // Handle other events if necessary
-
-            winit::event::Event::DeviceEvent { event, .. } => {
-                if let DeviceEvent::MouseMotion { delta } = event {
-                    let dx = delta.0;
-                    let dy = delta.1;
-                    let delta_x= dx as f32;
-                    let delta_y= dy as f32;
-                    
-                    if let Ok(mut ctx_guard) = event_loop_ctx.lock() {
-                        ctx_guard.flush().with(on::MouseMoved{delta_x, delta_y});
-                    }
-                    
-                    //camera.update_rotation(delta_x as f32, delta_y as f32);
-                    //log::debug!("Yaw: {}, Pitch: {}", dx, dy);
-                    
-                    
-                }
-            }
 
             _ => {}
         }
@@ -401,7 +405,6 @@ impl GeeseSystem for ComputePipelineSystem {
         let texture_view = &ctx.get::<TextureViewSystem>().texture_view;
         // Camera
         let camera_system = ctx.get::<CameraSystem>();
-        let camera_buffer = camera_system.camera_buffer.to_gpu_buffer(device);
         let camera_bind_group_layout = &camera_system.camera_bind_group_layout;
         // // Voxel Data
         
@@ -837,7 +840,6 @@ impl RenderSystem {
 
         
         
-        // let src_buffer = camera_buffer.to_gpu_buffer(device);
     
         // let dst_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         //     label: Some("Destination Camera Buffer"),
@@ -857,7 +859,7 @@ impl RenderSystem {
         {
             let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("Compute Pass"),
-                timestamp_writes: Default::default(), });
+                timestamp_writes: Default::default(),});
                 compute_pass.set_pipeline(&compute_pipeline);
                 compute_pass.set_bind_group(0, &compute_bind_group, &[]);
                 compute_pass.set_bind_group(1, &camera_bind_group, &[]);
@@ -897,6 +899,7 @@ impl RenderSystem {
         }
 
         device_system.queue.submit(iter::once(encoder.finish()));
+        //device_system.device.poll(wgpu::Maintain::Wait);
         output.present();
 
         Ok(())
@@ -1208,18 +1211,31 @@ impl Camera {
 
         CameraBuffer {
             position: self.position,
-            rotation: [x, y, z],
-            fov: self.fov,
-            padding: 0.0, // Padding to align with GPU requirements
+            direction: [x, y, z],
+            up: (0.0, 1.0, 0.0).into(),
+            fov: 90.0,
+            aspect: 16.0 / 9.0,
+            padding3: 0.0,
         }
+
+
+        // position: self.position,
+        //     _padding1: 0.0,
+        //     direction: [x, y, z],
+        //     _padding2: 0.0,
+        //     fov: self.fov,
+        //     _padding3: 0.0, // Padding to align with GPU requirements
+
+        
 
     }
 }
 struct CameraSystem {
+    camera: Camera,
     camera_buffer: CameraBuffer,
+    gpu_camera_buffer: Buffer,
     camera_bind_group: BindGroup,
     camera_bind_group_layout: BindGroupLayout,
-    camera: Camera,
     ctx: GeeseContextHandle<Self>,
 }
 
@@ -1231,16 +1247,9 @@ impl GeeseSystem for CameraSystem {
     fn new(ctx: GeeseContextHandle<Self>) -> Self {
         let device = ctx.get::<DeviceSystem>().device.clone();
         let mut camera = Camera::default();
-        let camera_buffer = camera.convert_to_buffer().to_gpu_buffer(&device);
-        
 
-        let dst_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Destination Camera Buffer"),
-            size: std::mem::size_of::<CameraBuffer>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
+        let camera_buffer = camera.convert_to_buffer();
+        let gpu_camera_buffer = camera_buffer.to_gpu_buffer(&device);
 
         let camera_bind_group_layout = //&camera_system.camera_bind_group_layout;
         device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -1258,16 +1267,16 @@ impl GeeseSystem for CameraSystem {
             label: Some("camera_bind_group_layout"),
         });
 
-
         let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             layout: &camera_bind_group_layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
-                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: &camera_buffer,
+                resource: gpu_camera_buffer.as_entire_binding()
+                 /*wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &gpu_camera_buffer,
                     offset: 0,
                     size: None
-                }),
+                }),*/
             },],
             label: Some("Camera Bind Group"),
 
@@ -1281,7 +1290,8 @@ impl GeeseSystem for CameraSystem {
         });
 
         Self { 
-            camera_buffer: camera.convert_to_buffer(),
+            camera_buffer,
+            gpu_camera_buffer,
             camera_bind_group,
             camera_bind_group_layout,
             camera,
@@ -1295,23 +1305,49 @@ impl CameraSystem {
         let device_system = self.ctx.get::<DeviceSystem>();
         let device = &device_system.device;
         let queue = &device_system.queue;
-        self.camera.update_rotation(event.delta_x, event.delta_y);
-        self.camera_buffer = self.camera.convert_to_buffer();
-        println!("rotation: {} {} {}", self.camera_buffer.rotation[0],self.camera_buffer.rotation[1],self.camera_buffer.rotation[2]);
-        queue.write_buffer(&self.camera_buffer.to_gpu_buffer(device), 0, bytemuck::cast_slice(&[self.camera_buffer]));
+        self.camera.update_rotation(event.delta_x, event.delta_y); // calculate direction 3D
+
+
+        
+        
+        self.camera_buffer = self.camera.convert_to_buffer(); // Convert it into Camera Buffer form :)
+
+        //println!("rotation: {} {} {}", self.camera_buffer.rotation[0],self.camera_buffer.rotation[1],self.camera_buffer.rotation[2]); // debug printing
+        let binding = [self.camera_buffer];
+        let buffer_data = bytemuck::cast_slice(&binding);
+        queue.write_buffer(&self.gpu_camera_buffer, 0, buffer_data);
+        //queue.write_buffer(&self.gpu_camera_buffer, 0, bytemuck::bytes_of(&self.camera_buffer)); // write to the buffer
+        //println!("has written to the buffer supposedly...");
+
+        let encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("camera buffer encoder"),
+        });
+        //encoder.finish();
+        queue.submit(std::iter::once(encoder.finish()));
+        //device.poll(wgpu::Maintain::Wait);
+
+        
         
 
+        //println!("buffer data: {:?}", bytemuck::bytes_of(&self.camera_buffer));
+        
+        //        bytemuck::bytes_of(&self.camera_buffer);
+
+        
     }
 
 }
+
 
 #[repr(C, align(16))]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct CameraBuffer {
     position: [f32; 3],
-    rotation: [f32; 3],
+    direction: [f32; 3],
+    up: [f32; 3],
     fov: f32,
-    padding: f32,
+    aspect: f32,
+    padding3: f32,              // 4 bytes
 }
 
 impl CameraBuffer {
@@ -1320,12 +1356,20 @@ impl CameraBuffer {
         // Convert the CameraBuffer to a byte slice
         let buffer_data = bytemuck::bytes_of(self);
 
-        // Create a buffer on the GPU
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Camera Uniform Buffer"),
+            size: std::mem::size_of::<CameraBuffer>() as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::UNIFORM,
+            mapped_at_creation: false,
+        })
+
+
+        /*// Create a buffer on the GPU
         device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Camera Buffer"),
             contents: buffer_data,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
-        })
+        })*/
     }
 }
 
