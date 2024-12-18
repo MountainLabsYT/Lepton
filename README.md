@@ -1,8 +1,7 @@
 
 # Lepton
 
-A micro voxel engine written in Rust with WGPU and runs on the Geese Event framework.
-Just finished refactoring the code with the geese event system: https://github.com/DouglasDwyer/geese
+A micro voxel engine written in Rust with WGPU and runs on the [Geese Event Framework](https://github.com/DouglasDwyer/geese).
 
 ## Screenshots
 
