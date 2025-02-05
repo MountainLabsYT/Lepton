@@ -53,12 +53,6 @@ Feel free to make open an issue here on github :D
 
 - rewrote the whole system with geese 11/1/24
 
-- switched to vulkan 11/15/24
-
-- 12/2/24 Nah back to wgpu lol.
-
-- I did not switch to vulkan, but instead I kept writting in wgpu, I almost have voxels again >:)
-
 
 
 ## Demo
