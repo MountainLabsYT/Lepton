@@ -1,4 +1,3 @@
-//This is the old code I called it mc for no good reason. it does nothing but is mod because otherwise vscode won't read it properly.
 #![allow(
     dead_code,
     unused_variables,
@@ -9,6 +8,22 @@
     unused_assignments,
     unused_must_use
 )]
+#![feature(portable_simd)]
+//
+// Internal Dep:
+//
+
+mod lib;  // Declare the lib module
+use lib::SV64Tree;
+/* Unused brickmaps!
+use lib::brickmap;  // Use the Brickmap struct
+use lib::brickmap::ChunkWorld;
+use lib::brickmap::GPUChunk;
+*/
+//
+// Dependancies
+//
+
 use bytemuck::Zeroable;
 use bytemuck::Pod;
 //dot vox stuff:
@@ -24,14 +39,22 @@ use cgmath::Vector3;
 use cgmath::vec2;
 use cgmath::vec3;
 use cgmath::Vector2;
+use cgmath::{InnerSpace, Deg};
 
 use dot_vox::Size;
+use geese::Mut;
 use geese::SystemRef;
 //geese
 use geese::{
     dependencies, Dependencies, EventHandlers, EventQueue,
     GeeseContext, GeeseContextHandle, GeeseSystem, event_handlers,
 };
+
+use lib::SV64Tree::create_test_tree;
+use lib::SV64Tree::Sparse64Tree;
+use lib::SV64Tree::Tree64GpuManager;
+use wgpu::core::device;
+use winit::keyboard::Key;
 //use wgpu::hal::vulkan::Buffer;
 //use texture::Texture;
 //use wgpu::core::device;
@@ -52,6 +75,20 @@ use winit::{ event_loop, event::*,
     window::{Window, WindowBuilder},
 };
 
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+
+//
+// Startup + Eventloop
+//
+
 //main loop
 fn main() {
     println!("Size of CameraBuffer: {} bytes", std::mem::size_of::<CameraBuffer>());
@@ -60,7 +97,6 @@ fn main() {
     pollster::block_on(run());
     println!("Program ended.");
 }
-
 
 mod on {
     use std::fmt::DebugTuple;
@@ -79,13 +115,18 @@ mod on {
         pub delta_x: f32,
     }
 
-}
+    pub struct KeyPressed {
+        pub key: winit::keyboard::KeyCode,
+        pub state: winit::event::ElementState,
+    }
 
+}
 
 async fn run() {
     env_logger::init();
     let event_loop = EventLoop::new().unwrap();
     let window = Arc::new(WindowBuilder::new()
+        .with_maximized(true)
         .with_title("Lepton Engine")
         .build(&event_loop)
         .unwrap());
@@ -112,14 +153,14 @@ async fn run() {
             .with(geese::notify::add_system::<ResizeSystem>())
             .with(geese::notify::add_system::<RenderSystem>())
             .with(geese::notify::add_system::<ComputePipelineSystem>())
-            .with(geese::notify::add_system::<ChunkSystem>())
+            .with(geese::notify::add_system::<WorldSystem>())
+            .with(geese::notify::add_system::<FreeCamSystem>())
             /*.with(geese::notify::add_system::<CameraUpdateSystem>())*/;
             
     }
     
     let render_system = {let ctx_guard = ctx.lock().unwrap(); ctx_guard.get::<RenderSystem>();};
     
-
     let event_loop_ctx = Arc::clone(&ctx);
 
     let _ = 
@@ -132,13 +173,13 @@ async fn run() {
                     let dy = delta.1;
                     let delta_x= dx as f32;
                     let delta_y= dy as f32;
-                    
+                    //println!("Yaw: {}, Pitch: {}", delta.0, delta.1);
                     if let Ok(mut ctx_guard) = event_loop_ctx.lock() {
                         ctx_guard.flush().with(on::MouseMoved{delta_x, delta_y});
                     }
                     
                     //camera.update_rotation(delta_x as f32, delta_y as f32);
-                    //log::debug!("Yaw: {}, Pitch: {}", dx, dy);
+                    
                     
                     
                 }
@@ -167,6 +208,7 @@ async fn run() {
                         if let Ok(mut ctx_guard) = event_loop_ctx.lock() {
                             ctx_guard.flush().with(on::WindowResized{physical_size});
                         }
+                        window.request_redraw();
                         //ctx.raise_event(|sys: &mut ResizeSystem| {
                         //sys.handle_resize(physical_size);
                         //});
@@ -174,7 +216,7 @@ async fn run() {
 
                     // Request a redraw when needed
                     WindowEvent::RedrawRequested => {
-                        
+                        window.request_redraw();
                         if let Ok(mut ctx_guard) = event_loop_ctx.lock() {
                             window.request_redraw();
                             ctx_guard.flush().with(on::NewFrame{});
@@ -182,6 +224,28 @@ async fn run() {
                         //ctx.raise_event(|sys: &mut RenderSystem| {
                         //    sys.render();
                         //});
+                    }
+
+                    WindowEvent::KeyboardInput {
+                        event:
+                            KeyEvent {
+                                physical_key: PhysicalKey::Code(key_code),
+                                state,
+                                ..
+                            },
+                        ..
+                    } => {
+                        // Skip the escape key since it's handled above
+                        if key_code != KeyCode::Escape {
+                            window.request_redraw();
+                            //println!("yeah it works :D || The key pressed:  {:?}", key_code);
+                            if let Ok(mut ctx_guard) = event_loop_ctx.lock() {
+                                ctx_guard.flush().with(on::KeyPressed{
+                                    key: key_code,
+                                    state: state,
+                                });
+                            }
+                        }
                     }
 
                     
@@ -198,6 +262,29 @@ async fn run() {
     });
 }
 
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+
+//
+// Graphics Init
+//
+
 #[derive(Default)]
 struct ParamSystem{
     window: Option<Arc<Window>>
@@ -208,9 +295,6 @@ impl GeeseSystem for ParamSystem {
         Self::default()
     }
 }
-
-
-
 
 pub struct InstanceSystem {
     instance: Arc<Instance>,
@@ -278,8 +362,6 @@ impl SurfaceSystem {
         return &self.surface;
     }
 }
-
-
 pub struct DeviceSystem {
     device: Arc<Device>,
     queue: Arc<Queue>,
@@ -290,8 +372,12 @@ impl DeviceSystem {
         adapter: Arc<Adapter>,
     ) -> (Arc<wgpu::Device>, Arc<wgpu::Queue>) {
         let desired_limits = wgpu::Limits {
-            max_buffer_size: 4 * 1024 * 1024 * 1024, // Request up to 4 GB
-            max_uniform_buffer_binding_size: 64 * 1024, // Request larger uniform buffers
+            // max_buffer_size: 4 * 1024 * 1024 * 1024, // Request up to 4 GB
+            // max_uniform_buffer_binding_size: 64 * 1024, // Request larger uniform buffers THIS USED TO BE 64 * 1024
+            // max_storage_buffer_binding_size: 2 * 1024 * 1024 * 1024,
+            max_buffer_size: 2 * 1024 * 1024 * 1024, // 4 GB
+            max_uniform_buffer_binding_size: 64 * 1024, // 64 KB
+            max_storage_buffer_binding_size: 1024 * 1024 * 1024 * 2,
             ..wgpu::Limits::default()
         };
         let (device, queue) = adapter
@@ -308,6 +394,7 @@ impl DeviceSystem {
             .unwrap();
         let limits = adapter.limits();
         println!("Max Buffer Size: {}", limits.max_buffer_size);
+        println!("Max Storage Buffer Size: {}", limits.max_storage_buffer_binding_size);
         (Arc::new(device), Arc::new(queue))
     }
 
@@ -333,8 +420,6 @@ impl GeeseSystem for DeviceSystem {
         Self { device, queue }
     }
 }
-
-
 struct TextureViewSystem {
     texture_view: TextureView,
     texture: Texture,
@@ -375,6 +460,28 @@ impl GeeseSystem for TextureViewSystem {
 
  }
 
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+
+//
+// Pipelines
+//
 
 struct ComputePipelineSystem{
     compute_pipeline: wgpu::ComputePipeline,
@@ -388,7 +495,7 @@ impl GeeseSystem for ComputePipelineSystem {
         .with::<CameraSystem>()
         .with::<ParamSystem>()
         .with::<TextureViewSystem>()
-        .with::<ChunkSystem>();
+        .with::<WorldSystem>();
 
     fn new(ctx: GeeseContextHandle<Self>) -> Self {
         // Device, Surface, Adapter
@@ -408,11 +515,17 @@ impl GeeseSystem for ComputePipelineSystem {
         let camera_bind_group_layout = &camera_system.camera_bind_group_layout;
         // // Voxel Data
         
-        // let chunk_system = ctx.get::<ChunkSystem>();
-        // let chunk_world = &chunk_system.world;
+        let world_system = ctx.get::<WorldSystem>();
+        let world_bind_group = &world_system.tree_manager.contree_bind_group;
+        let world_bind_group_layout = &world_system.tree_manager.contree_bind_group_layout;
+        // let gpu_chunk = &chunk_system.gpu_voxel_world;
+        // let voxel_world_bind_group_layout   = &gpu_chunk.vox_world_bind_group_layout;
         // let (gpu_bricks, gpu_indices) = chunk_world.collect_bricks_gpu(256);
         // let (bricks_gpu_buffer, indices_gpu_buffer) = upload_to_gpu(&device, &queue, gpu_bricks, gpu_indices);
         
+
+
+
 
 
         let compute_shader = device.create_shader_module(wgpu::include_wgsl!("shaders/compute_trace.wgsl"));
@@ -470,7 +583,7 @@ impl GeeseSystem for ComputePipelineSystem {
 
         let compute_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Compute Pipeline Layout"),
-            bind_group_layouts: &[&compute_bind_group_layout, &camera_bind_group_layout], // Bind group layout created earlier
+            bind_group_layouts: &[&compute_bind_group_layout, &camera_bind_group_layout, &world_bind_group_layout], // Bind group layout created earlier
             push_constant_ranges: &[],
         });
         
@@ -625,6 +738,16 @@ impl GeeseSystem for PipelineSystem {
        .find(|f| f.is_srgb())
        .unwrap_or(surface_caps.formats[0]);
 
+        
+    
+        //|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+        //|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+        //|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+
+        //
+        // Config
+        //
+
         let config = wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
         format: surface_format,
@@ -632,7 +755,7 @@ impl GeeseSystem for PipelineSystem {
         height: size.height,
         present_mode: surface_caps.present_modes[0],
         alpha_mode: surface_caps.alpha_modes[0],
-        desired_maximum_frame_latency: 2,
+        desired_maximum_frame_latency: 0,
         view_formats: vec![],
     };
     //let depth_texture = texture::Texture::create_depth_texture(&device, &config, "depth_texture");
@@ -772,7 +895,28 @@ impl GeeseSystem for PipelineSystem {
     }
 }
 
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
 
+//
+// Rendering
+//
 
 struct RenderSystem {
     ctx: GeeseContextHandle<Self>,
@@ -785,6 +929,7 @@ impl GeeseSystem for RenderSystem {
         .with::<CameraSystem>()
         .with::<SurfaceSystem>()
         .with::<ComputePipelineSystem>()
+        .with::<WorldSystem>()
         .with::<ParamSystem>();
 
     const EVENT_HANDLERS: EventHandlers<Self> = event_handlers().with(Self::call_render);
@@ -798,7 +943,6 @@ impl RenderSystem {
 
     fn call_render(&mut self, event: &on::NewFrame){
         self.render();
-        println!("rendered!")
     }
 
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> 
@@ -824,6 +968,16 @@ impl RenderSystem {
         let camera_system = self.ctx.get::<CameraSystem>();
         let camera_bind_group = &camera_system.camera_bind_group;
         let camera_bind_group_layout = &camera_system.camera_bind_group_layout;
+
+        let world_system = self.ctx.get::<WorldSystem>();
+        let world_bind_group = &world_system.tree_manager.contree_bind_group;
+        let world_bind_group_layout = &world_system.tree_manager.contree_bind_group_layout;
+
+
+        // let chunk_system = self.ctx.get::<ChunkSystem>();
+        // let voxel_world = &chunk_system.gpu_voxel_world;
+        // let voxel_world_bind_group = &voxel_world.vox_world_bind_group;
+        // let voxel_world_bind_group_layout = &voxel_world.vox_world_bind_group_layout;
         
 
         let param_system = &self.ctx.get::<ParamSystem>();
@@ -863,6 +1017,8 @@ impl RenderSystem {
                 compute_pass.set_pipeline(&compute_pipeline);
                 compute_pass.set_bind_group(0, &compute_bind_group, &[]);
                 compute_pass.set_bind_group(1, &camera_bind_group, &[]);
+                compute_pass.set_bind_group(2, &world_bind_group, &[]);
+                //compute_pass.set_bind_group(2, &voxel_world_bind_group, &[]);
                 //compute_pass.set_bind_group(1, &camera_bind_group, &[]);
                 compute_pass.dispatch_workgroups((&size.width + 15) / 16, (&size.height + 15) / 16, 1);
         }
@@ -905,6 +1061,30 @@ impl RenderSystem {
         Ok(())
     }
 }
+
+
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+
+//
+// Resizing
+//
 
 struct ResizeSystem {
     ctx: GeeseContextHandle<Self>,
@@ -950,221 +1130,73 @@ impl ResizeSystem{
     }
 }
 
-//
-// Game Systems
-//
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
 
-
-
-struct ChunkSystem {
-    world: ChunkWorld,
+struct WorldSystem {
+    tree_manager: Tree64GpuManager,
+    contree: Sparse64Tree,
 }
 
-impl GeeseSystem for ChunkSystem {
+impl GeeseSystem for WorldSystem {
+    const DEPENDENCIES: Dependencies = dependencies()
+    .with::<DeviceSystem>();
+
+
     fn new(ctx: GeeseContextHandle<Self>) -> Self {
-        let mut world: ChunkWorld = ChunkWorld::new();
-        println!("Init world.");
-        world.create_world(2); // should be 8
-        println!("Created world.");
-        world.populate_brickmaps();
-        println!("Populated world.");
-        Self { world }
-    
-    }
+        let device_system = &ctx.get::<DeviceSystem>();
+        let device = &device_system.device;
+        let queue = &device_system.queue;
 
-}
-
-
-//
-// structs
-//
-
-#[repr(C, align(8))]
-#[derive(Copy, Clone, Debug, Zeroable, Pod)]
-pub struct Voxel {
-    pub color: [f32; 3], // Color as RGBA (u8 for compact representation)
-    pub material: u32,  // Material ID
-}
-
-impl Voxel {
-    pub fn new(color: [f32; 3], material: u32) -> Self {
-        Self { color, material }
-    }
-}
-
-/// A Brick containing an array of voxels and a flag for whether it contains data.
-#[repr(C, align(8))]
-#[derive(Debug, Clone, Zeroable, Pod, Copy)]
-pub struct Brick {
-    //pub voxels: Vec<Voxel>,
-    pub voxels: [Voxel; 4096],
-    //pub padding: [u8; 7],
-}
-
-use noise::{NoiseFn, Perlin, Seedable};
-impl Brick{
-    fn new() -> Self{
-        Self{
-            voxels: [Voxel::new([0.0, 0.0, 0.0], 0); 4096],
-            //voxels: Vec::new(),
-        }
-    }
-
-}
-use rand::prelude::*;
-pub struct BrickMap {
-    pub bricks: Vec<Brick>, // A flat array of brick data, not indexable do to its sparse nature.
-    pub indices: Vec<i32>, // Aka the bitmap but its not bits lol.
-    pub position: Vec<i32>,
-}
-
-impl BrickMap{
-    fn new(size: usize) -> Self{
-        let mut bricks: Vec<Brick> = Vec::new();
-        let mut indices: Vec<i32> = Vec::new();
-        let new_size = size * size * size;
-
-        let mut rng = thread_rng();
-
+        let contree = create_test_tree();
+        let mut tree_manager = Tree64GpuManager::new(&device, &contree);
         
-        for i in 0..new_size {
-            let should_gen_brick = rng.gen_bool(1.0);
-            if should_gen_brick == true{
-                bricks.push(Brick::new());
-                indices.push(bricks.len().try_into().unwrap());
-            } else {
-                indices.push(-1);
-            }
-            
-        }
+        println!("contree nodes: {}", contree.nodes.len());
 
-        Self { bricks: Vec::new(), indices: Vec::new(), position: Vec::new() }
+
+        Self {tree_manager, contree}
     }
-    // !
-    // this needs the indices list implementation, otherwise its useless lol.
-    // !
-    fn generate_map(&mut self){
-        let mut rng = thread_rng();
-        for brick in self.bricks.iter_mut() {
-            
-            for mut voxel in brick.voxels {
-                let new_vox = Voxel::new([rng.gen_range(0.0..1.0),rng.gen_range(0.0..1.0),rng.gen_range(0.0..1.0)], rng.gen_range(0..1));
-                voxel = new_vox;
-            }
-            
-        }
-    }
+
 }
 
-
-pub struct ChunkWorld{
-    pub brickmaps: Vec<BrickMap>,
-}
-
-impl ChunkWorld {
-    fn new() -> Self{
-        Self{ brickmaps: Vec::new()}
-    }
-
-    fn create_world(&mut self, world_size: usize) {
-        let brickmaps_total = world_size * world_size * world_size;
-        for i in 0..brickmaps_total {
-            self.brickmaps.push(BrickMap::new(16));
-        }
-    }
-
-    fn populate_brickmaps(&mut self){
-        for bm in self.brickmaps.iter_mut() {
-            bm.generate_map();
-            //print!("Generated Brickmap");
-
-        }
-    }
-
-    pub fn collect_bricks_gpu(
-        &self,
-        grid_size: usize,
-    ) -> (Vec<Brick>, Vec<i32>) {
-        let mut brick_buffer: Vec<Brick> = Vec::new(); // Dynamically growing brick buffer
-        let mut indices_buffer: Vec<i32> = vec![-1; /*self.brickmaps.len() * */grid_size * grid_size * grid_size]; // Flattened indices buffer
-        let mut current_offset = 0;
-        
-        for (brickmap_idx, brickmap) in self.brickmaps.iter().enumerate() {
-            let map_offset = brickmap_idx * grid_size * grid_size * grid_size;
-
-            for (local_idx, &index) in brickmap.indices.iter().enumerate() {
-                let global_idx = map_offset + local_idx; // Compute global flattened index
-                
-                if index == -1 {
-                    continue; // Skip empty bricks
-                }
-
-                let brick_index = (index - 1) as usize; // Convert to 0-based index
-                let brick = &brickmap.bricks[brick_index];
-
-                // Add the brick to the buffer
-                brick_buffer.push(*brick);
-
-                // Update indices to point to the new position in the buffer
-                indices_buffer[global_idx] = current_offset;
-                current_offset += 1;
-            }
-        }
-        print!("{}", brick_buffer.capacity());
-        (brick_buffer, indices_buffer)
-    }
-}
-
-
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
 
 //
-// Functions
+// Camera
 //
-
-pub fn generate_noise(x: f64, y: f64, z: f64) -> f64{
-    let perlin = Perlin::new(1);
-    let val: f64 = perlin.get([x, y, z]);
-    return val;
-}
-
-
-use bytemuck::cast_slice;
-
-pub fn upload_to_gpu(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    bricks: Vec<Brick>,      // Prepared brick buffer
-    indices: Vec<i32>,       // Prepared indices buffer
-) -> (wgpu::Buffer, wgpu::Buffer) {
-    // Convert Vec<Brick> to a byte slice
-    let bricks_bytes = cast_slice(&bricks);
-
-    // Convert Vec<i32> to a byte slice
-    let indices_bytes = cast_slice(&indices);
-
-    // Create the buffer for bricks
-    let brick_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Brick Buffer"),
-        contents: bricks_bytes,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-    });
-
-    // Create the buffer for indices
-    let indices_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Indices Buffer"),
-        contents: indices_bytes,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-    });
-
-    // Return the GPU buffers
-    (brick_buffer, indices_buffer)
-}
-
-//
-// Camera Structs
-//
-
-
 
 struct Camera {
     position: [f32; 3],
@@ -1176,10 +1208,10 @@ struct Camera {
 impl Default for Camera {
     fn default() -> Self {
         Self {
-            position: [0.0, 1.0, -5.0],
-            yaw: 90.0,
-            pitch: 0.0,
-            fov: 90.0,
+            position: [0.0, 2.0, 20.0],
+            yaw: 45.0,
+            pitch: 30.0,
+            fov: 60.0,
         }
     }
 }
@@ -1190,42 +1222,42 @@ impl Camera {
     }
 
     pub fn update_rotation(&mut self, delta_x: f32, delta_y: f32) {
-        let sensitivity = 0.1; // Adjust this value to change mouse sensitivity
+        let sensitivity = 0.05; // Adjust this value to change mouse sensitivity
 
         // Update yaw and pitch with sensitivity scaling
-        self.yaw += delta_x * sensitivity;
-        self.pitch += delta_y * sensitivity;
+        self.yaw -= delta_x * sensitivity;
+        self.pitch -= delta_y * sensitivity;
 
         // Clamp pitch to avoid flipping at the poles
         self.pitch = self.pitch.clamp(-89.0, 89.0);
+        self.yaw = (self.yaw + 360.0) % 360.0;
+        // println!("Delta X: {}, Delta Y: {}", delta_x, delta_y);
+        // println!("Updated Yaw: {}, Updated Pitch: {}", self.yaw, self.pitch);
+
+
     }
 
     fn convert_to_buffer(&mut self) -> CameraBuffer{
-        let yaw_rad = self.yaw.to_radians();
-        let pitch_rad = self.pitch.to_radians();
+        //let yaw_rad = self.yaw.to_radians();
+        //let pitch_rad = self.pitch.to_radians();
 
         // Compute the direction vector
-        let x = yaw_rad.cos() * pitch_rad.cos();
-        let y = pitch_rad.sin();
-        let z = yaw_rad.sin() * pitch_rad.cos();
+        // println!("Normalized Direction: {:?}", direction);
+        // println!("Magnitude: {}", direction.magnitude());
+
+        //println!("Direction: {:?}", direction);
+        //let (yaw, pitch) = direction_to_yaw_pitch(direction);
+        //println!("yaw: {} pitch: {}", self.yaw, self.pitch);
+
 
         CameraBuffer {
             position: self.position,
-            direction: [x, y, z],
-            up: (0.0, 1.0, 0.0).into(),
-            fov: 90.0,
+            yaw: self.yaw,
+            pitch: self.pitch,
             aspect: 16.0 / 9.0,
+            fov: self.fov,
             padding3: 0.0,
         }
-
-
-        // position: self.position,
-        //     _padding1: 0.0,
-        //     direction: [x, y, z],
-        //     _padding2: 0.0,
-        //     fov: self.fov,
-        //     _padding3: 0.0, // Padding to align with GPU requirements
-
         
 
     }
@@ -1307,44 +1339,49 @@ impl CameraSystem {
         let queue = &device_system.queue;
         self.camera.update_rotation(event.delta_x, event.delta_y); // calculate direction 3D
 
-
-        
-        
         self.camera_buffer = self.camera.convert_to_buffer(); // Convert it into Camera Buffer form :)
 
         //println!("rotation: {} {} {}", self.camera_buffer.rotation[0],self.camera_buffer.rotation[1],self.camera_buffer.rotation[2]); // debug printing
+
         let binding = [self.camera_buffer];
         let buffer_data = bytemuck::cast_slice(&binding);
         queue.write_buffer(&self.gpu_camera_buffer, 0, buffer_data);
-        //queue.write_buffer(&self.gpu_camera_buffer, 0, bytemuck::bytes_of(&self.camera_buffer)); // write to the buffer
-        //println!("has written to the buffer supposedly...");
-
+        
         let encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("camera buffer encoder"),
         });
-        //encoder.finish();
+        
+
         queue.submit(std::iter::once(encoder.finish()));
-        //device.poll(wgpu::Maintain::Wait);
-
-        
-        
-
-        //println!("buffer data: {:?}", bytemuck::bytes_of(&self.camera_buffer));
-        
-        //        bytemuck::bytes_of(&self.camera_buffer);
-
         
     }
 
-}
+    fn update(&mut self){
+        let device_system = self.ctx.get::<DeviceSystem>();
+        let device = &device_system.device;
+        let queue = &device_system.queue;
+        self.camera_buffer = self.camera.convert_to_buffer();
 
+        let binding = [self.camera_buffer];
+        let buffer_data = bytemuck::cast_slice(&binding);
+        queue.write_buffer(&self.gpu_camera_buffer, 0, buffer_data);
+        
+        let encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("camera buffer encoder"),
+        });
+        
+
+        queue.submit(std::iter::once(encoder.finish()));
+    }
+
+}
 
 #[repr(C, align(16))]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct CameraBuffer {
     position: [f32; 3],
-    direction: [f32; 3],
-    up: [f32; 3],
+    yaw: f32,
+    pitch: f32,
     fov: f32,
     aspect: f32,
     padding3: f32,              // 4 bytes
@@ -1364,149 +1401,164 @@ impl CameraBuffer {
         })
 
 
-        /*// Create a buffer on the GPU
-        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Camera Buffer"),
-            contents: buffer_data,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
-        })*/
     }
 }
 
+pub fn direction_to_yaw_pitch(direction: Vector3<f32>) -> (f32, f32) {
+    // Ensure the direction vector is normalized
+    let direction = direction.normalize();
 
+    // Calculate pitch (rotation around the X-axis)
+    // asin gives us the angle in radians, convert to degrees
+    let pitch = direction.y.asin().to_degrees();
 
+    // Calculate yaw (rotation around the Y-axis)
+    // atan2 gives us the angle in radians, convert to degrees
+    let yaw = direction.z.atan2(direction.x).to_degrees();
 
+    (yaw, pitch)
+}
 
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
+//|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\|\
 
+//
+// Free Cam
+//
 
-
-
-
-
-
-
-
-
-
-
-
-/*
-struct CameraUpdateSystem {
+struct FreeCamSystem {
     ctx: GeeseContextHandle<Self>,
 }
 
-impl CameraUpdateSystem {
-    fn update_rotation(&mut self, event: &on::MouseMoved){
+impl FreeCamSystem {
+    fn move_camera(&mut self, event: &on::KeyPressed){
+
         
-        self.calcuate_rotation(event.delta_x, event.delta_y);
-        let (device, queue) = self.get_device_system_parts(); // Immutable borrow occurs here
-        self.update(&device, &queue);
+        let delta_time = 0.016;
+        let mut camera_system = self.ctx.get_mut::<CameraSystem>();
+        let yaw = camera_system.camera.yaw;
+        let pitch = camera_system.camera.pitch;
+        let camera_position = camera_system.camera.position;
+        let speed = 0.5;
 
-        /* OLD CODE
-        // Call calculate_rotation first
-        self.calcuate_rotation(event.delta_x, event.delta_y);
-
-        // Borrow `DeviceSystem` to get `device` and `queue`
-        let (device, queue) = {
-            let device_system = self.ctx.get::<DeviceSystem>();
-            (device_system.device.clone(), device_system.queue.clone()) // Clone necessary references
-        };
-
-        // Borrow `CameraSystem` and update it using `device` and `queue`
-        {
-            let mut camera_system = self.ctx.get_mut::<CameraSystem>();
-            camera_system.update(&device, &queue); // Pass `device` and `queue` to `update`
-        } 
-        println!("update!")
-        */
-
-    }
+        let (up, forward, right) = calculate_directions(yaw, pitch);
 
 
-    pub fn update(&mut self, device: &Device, queue: &Queue) {
-        /*
+        let mut newpos: [f32; 3];
+        
 
 
-        let camera_system = &self.ctx.get::<CameraSystem>();
-        let camera = &camera_system.camera;
-        let buffer = &camera_system.buffer;
-
-
-
-        let camera_data = camera.lock().unwrap();
-        let binding = [*camera_data];
-        let src_buffer_data = bytemuck::cast_slice(&binding);
-        let src_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Source Camera Buffer"),
-            contents: src_buffer_data,
-            usage: wgpu::BufferUsages::COPY_SRC,
-        });
-
-        let dst_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Destination Camera Buffer"),
-            size: std::mem::size_of::<CameraBuffer>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Buffer Write Encoder"),
-        });
-        encoder.copy_buffer_to_buffer(&src_buffer, 0, &dst_buffer, 0, std::mem::size_of::<CameraBuffer>() as u64);
-        queue.write_buffer(&buffer, 0, src_buffer_data);
-        queue.submit(std::iter::once(encoder.finish()));
-        // println!("Size of CameraBuffer: {}", std::mem::size_of::<CameraBuffer>());
-        // println!("Align of CameraBuffer: {}", std::mem::align_of::<CameraBuffer>());
-        // println!("{} {}", camera_data.direction[0].to_string(), camera_data.direction[1].to_string());
-        */
-    }
-
-    fn get_device_system_parts(&self) -> (Arc<Device>, Arc<Queue>) {
-        let device_system = self.ctx.get::<DeviceSystem>();
-        (device_system.device.clone(), device_system.queue.clone())
-    }
-
-    fn calcuate_rotation(&mut self, delta_x: f32, delta_y: f32) {
-        /*let camera_system = self.ctx.get::<CameraSystem>(); // Extend lifetime
-        {
-            let mut camera = camera_system.camera.lock().unwrap(); // Lock Mutex
-            
-
-            let sensitivity = 0.1; // Adjust for desired sensitivity
-            camera.direction[0] += delta_x * sensitivity;
-            camera.direction[1] -= delta_y * sensitivity;
-    
-            // Clamp pitch to prevent flipping
-            camera.direction[1] = camera.direction[1].clamp(-89.0, 89.0);
-
-            let yaw = camera.direction[0].to_radians();
-            let pitch = camera.direction[1].to_radians();
-
-            camera.direction[0] = yaw;
-            camera.direction[1] = pitch;
-            // camera.rotation.x = yaw.cos() * pitch.cos();
-            // camera.rotation.y = pitch.sin();
-            // camera.rotation.z = yaw.sin() * pitch.cos();
-
-
+        if event.key == KeyCode::KeyA && event.state == ElementState::Pressed {
+            let newpos: [f32; 3] = apply_motion(camera_position.into(), right, speed, delta_time, false).into();
+            camera_system.camera.position = newpos.into();
+            //println!("A key pressed: {:?}", event.key);
         }
-        */
+
+        if event.key == KeyCode::KeyD {
+            let newpos: [f32; 3]  = apply_motion(camera_position.into(), right, speed, delta_time, true).into();
+            camera_system.camera.position = newpos.into();
+            //println!("D key pressed: {:?}", event.key);
+        }
+
+        if event.key == KeyCode::KeyW {
+            let newpos: [f32; 3]  = apply_motion(camera_position.into(), forward, speed, delta_time, false).into();
+            camera_system.camera.position = newpos.into();
+            //println!("W key pressed: {:?}", event.key);
+        }
+
+        if event.key == KeyCode::KeyS {
+            let newpos: [f32; 3]  = apply_motion(camera_position.into(), forward, speed, delta_time, true).into();
+            camera_system.camera.position = newpos.into();
+            
+            //println!("S key pressed: {:?}", event.key);
+        }
+
+        if event.key == KeyCode::KeyE && event.state == ElementState::Pressed {
+            let newpos: [f32; 3] = apply_motion(camera_position.into(), up, speed, delta_time, false).into();
+            camera_system.camera.position = newpos.into();
+            //println!("A key pressed: {:?}", event.key);
+        }
+
+        if event.key == KeyCode::KeyQ && event.state == ElementState::Pressed {
+            let newpos: [f32; 3] = apply_motion(camera_position.into(), up, speed, delta_time, true).into();
+            camera_system.camera.position = newpos.into();
+            //println!("A key pressed: {:?}", event.key);
+        }
+
+
+        camera_system.update();
+
+
     }
+
+    
 }
 
 
-impl GeeseSystem for CameraUpdateSystem{
+impl GeeseSystem for FreeCamSystem {
+    const EVENT_HANDLERS: EventHandlers<Self> = event_handlers().with(Self::move_camera);
     const DEPENDENCIES: Dependencies = dependencies()
-    .with::<DeviceSystem>();
-
-    const EVENT_HANDLERS: EventHandlers<Self> = event_handlers().with(Self::update_rotation);
-
+    .with::<Mut<CameraSystem>>();
 
     fn new(ctx: GeeseContextHandle<Self>) -> Self {
-        Self {ctx}
+        Self { ctx }
     }
 }
-*/
 
+use glam::{Vec3, Mat3};
 
+fn calculate_directions(yaw: f32, pitch: f32) -> (Vec3, Vec3, Vec3) {
+    // Convert yaw and pitch from degrees to radians
+    let yaw_rad = yaw.to_radians();
+    let pitch_rad = pitch.to_radians();
 
+    // Forward direction
+    let forward = Vec3::new(
+        yaw_rad.cos() * pitch_rad.cos(),
+        pitch_rad.sin(),
+        yaw_rad.sin() * pitch_rad.cos(),
+    )
+    .normalize();
+
+    // Right direction (cross product of forward and world up)
+    let world_up = Vec3::new(0.0, 1.0, 0.0);
+    let right = forward.cross(world_up).normalize();
+
+    // Up direction (cross product of right and forward)
+    let up = right.cross(forward).normalize();
+
+    (up, forward, right)
+}
+
+fn apply_motion(
+    position: Vec3,
+    direction: Vec3,
+    speed: f32,
+    delta_time: f32,
+    negative: bool,
+) -> Vec3 {
+
+    if negative == true {
+        position - direction * speed// * delta_time
+    } else {
+        position + direction * speed// * delta_time
+    }
+
+    
+}
