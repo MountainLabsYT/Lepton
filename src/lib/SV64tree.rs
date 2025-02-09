@@ -60,6 +60,50 @@ impl Sparse64Tree {
     
                 // Update parent
                 let node = &mut self.nodes[current_index];
+                if node.child_mask == 0 {
+                    node.child_ptr = new_node_index;
+                }
+                node.child_mask |= 1 << child_index;
+                current_index = new_node_index as usize;
+            } else {
+                // Navigate to existing child
+                let node = &self.nodes[current_index];
+                current_index = node.child_ptr as usize + child_index;
+            }
+    
+            current_depth += 1;
+        }
+    
+        // Set voxel data at the leaf node
+        let leaf = &mut self.nodes[current_index];
+        leaf.child_ptr |= 0x80000000; // Set leaf flag
+        leaf.voxel_data = color;
+    }
+
+
+    pub fn insert_incorrect_insterion(&mut self, x: u32, y: u32, z: u32, depth: usize, color: [u8; 3]) {
+        let mut current_index = 0;
+        let mut current_depth = 0;
+    
+        while current_depth < depth {
+            let child_index = self.compute_child_index(x, y, z, current_depth);
+            
+            let needs_new_node = {
+                let node = &self.nodes[current_index];
+                (node.child_mask & (1 << child_index)) == 0
+            };
+    
+            if needs_new_node {
+                // Create new node
+                let new_node_index = self.nodes.len() as u32;
+                self.nodes.push(Node64 {
+                    child_mask: 0,
+                    child_ptr: 0,
+                    voxel_data: [0, 0, 0],
+                });
+    
+                // Update parent
+                let node = &mut self.nodes[current_index];
                 node.child_mask |= 1 << child_index;
                 if (node.child_mask & (1 << child_index)) == (1 << child_index) {
                     // Only set child_ptr if this is the first child
@@ -82,41 +126,7 @@ impl Sparse64Tree {
     }
 
 
-    pub fn insert_old(&mut self, x: u32, y: u32, z: u32, depth: usize, color: [u8; 3]) {
-        let mut current_index = 0;
-        let mut current_depth = 0;
 
-        while current_depth < depth {
-            let child_index = self.compute_child_index(x, y, z, current_depth);
-            
-            let needs_new_node = {
-                let node = &self.nodes[current_index];
-                (node.child_mask & (1 << child_index)) == 0
-            };
-
-            if needs_new_node {
-                let new_node_index = self.nodes.len() as u32;
-                self.nodes.push(Node64 {
-                    child_mask: 0,
-                    child_ptr: 0,
-                    voxel_data: [0, 0, 0],
-                });
-
-                let node = &mut self.nodes[current_index];
-                node.child_mask |= 1 << child_index;
-                node.set_ptr(new_node_index);
-            }
-
-            let child_ptr = self.nodes[current_index].get_ptr();
-            current_index = child_ptr as usize + child_index;
-            current_depth += 1;
-        }
-
-        // Set voxel data at the leaf node
-        let leaf = &mut self.nodes[current_index];
-        leaf.set_leaf(true);
-        leaf.voxel_data = color;
-    }
 
     fn compute_child_index(&self, x: u32, y: u32, z: u32, depth: usize) -> usize {
         let shift = depth * 2; // 4 splits = 2 bits per level
@@ -136,6 +146,8 @@ impl Sparse64Tree {
         buffer
     }
 }
+
+
 
 
 
@@ -274,20 +286,54 @@ pub fn create_test_tree() -> Sparse64Tree {
 
     // Add some test voxels
     let test_positions = [
-        (0, 0, 0, [255, 0, 0]),   // Red voxel
-        (3, 3, 3, [255, 255, 0]), // Yellow voxel
-        (3, 2, 0, [0, 0, 255]),   // Blue voxel
-        (1, 0, 0, [0, 255, 0]),   // Green voxel
+        // (0, 0, 0, [255, 0, 0]),   // Red voxel
+        // (2, 2, 2, [255, 255, 0]), // Yellow voxel
+        // (1, 1, 1, [0, 0, 255]),   // Blue voxel
+        // (3, 3, 3, [0, 255, 0]),   // Green voxel
+        (generate_0_to_3(), generate_0_to_3(), generate_0_to_3(), [0, 0, 255]),   // Blue voxel
+        // (generate_0_to_3(), generate_0_to_3(), generate_0_to_3(), [0, 0, 255]),   // Blue voxel
+        // (generate_0_to_3(), generate_0_to_3(), generate_0_to_3(), [0, 255, 255]),   // Blue voxel
+        // (generate_0_to_3(), generate_0_to_3(), generate_0_to_3(), [generate_0_to_255(), generate_0_to_255(), generate_0_to_255()]),
+        // (generate_0_to_3(), generate_0_to_3(), generate_0_to_3(), [generate_0_to_255(), generate_0_to_255(), generate_0_to_255()]),
+        // (generate_0_to_3(), generate_0_to_3(), generate_0_to_3(), [generate_0_to_255(), generate_0_to_255(), generate_0_to_255()]),
+        // (generate_0_to_3(), generate_0_to_3(), generate_0_to_3(), [generate_0_to_255(), generate_0_to_255(), generate_0_to_255()]),
+        // (generate_0_to_3(), generate_0_to_3(), generate_0_to_3(), [generate_0_to_255(), generate_0_to_255(), generate_0_to_255()]),
+        
         
     ];
 
-    for (x, y, z, color) in test_positions.iter() {
-        tree.insert(*x, *y, *z, 1, *color); // Depth 2 for testing
+    for x in 0..4 {
+        for y in 0..4 {
+            for z in 0..4 {
+                let num = generate_0_to_255();
+                if num > 155{
+                    tree.insert(x, y, z, 1, [(x * 64) as u8, (y * 64) as u8, (z * 64) as u8]);
+                }
+            }
+        }
     }
+
+    // for (x, y, z, color) in test_positions.iter() {
+    //     tree.insert(*x, *y, *z, 1, *color);
+    // }
+
+    
 
     tree
 }
 
+
+use rand::{random, Rng};
+
+fn generate_0_to_3() -> u32 {
+    let mut rng = rand::thread_rng();
+    rng.gen_range(0..=3) // Inclusive range from 0 to 3
+}
+
+fn generate_0_to_255() -> u8 {
+    let mut rng = rand::thread_rng();
+    rng.gen_range(0..=255) as u8 // Inclusive range from 0 to 3
+}
 // Example usage:
 /*
 pub fn setup_tree_for_gpu(device: &wgpu::Device, queue: &wgpu::Queue) -> Tree64GpuManager {
