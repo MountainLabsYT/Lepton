@@ -57,5 +57,5 @@ Feel free to make open an issue here on github :D
 
 ## Demo
 
-I accidentally deleted it lol.
+its under the name quark.exe
 
