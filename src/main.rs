@@ -14,7 +14,7 @@
 //
 
 mod lib;  // Declare the lib module
-use lib::SV64Tree;
+use lib::SV64tree;
 /* Unused brickmaps!
 use lib::brickmap;  // Use the Brickmap struct
 use lib::brickmap::ChunkWorld;
@@ -50,9 +50,9 @@ use geese::{
     GeeseContext, GeeseContextHandle, GeeseSystem, event_handlers,
 };
 
-use lib::SV64Tree::create_test_tree;
-use lib::SV64Tree::Sparse64Tree;
-use lib::SV64Tree::Tree64GpuManager;
+use lib::SV64tree::create_test_tree;
+use lib::SV64tree::Sparse64Tree;
+use lib::SV64tree::Tree64GpuManager;
 use wgpu::core::device;
 use winit::keyboard::Key;
 //use wgpu::hal::vulkan::Buffer;
