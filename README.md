@@ -57,5 +57,5 @@ Feel free to make open an issue here on github :D
 
 ## Demo
 
-The Demo is out now! Not much to see, but its a demo ¯\_(ツ)_/¯
+I accidentally deleted it lol.
 
