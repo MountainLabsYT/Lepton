@@ -2,9 +2,11 @@
 // Voxel Structs
 ///
 
-const VOXEL_SCALE: f32 = 64.0;
-const MAX_STEPS: u32 = 128;
+const VOXEL_SCALE: f32 = 8.0;
+const MAX_STEPS= 128;
 const EPSILON: f32 = 0.0001;
+const MAX_STACK_SIZE: i32 = 16;
+const STEP_LIMIT = 256;
 
 struct Node64 {
     child_mask_low: u32,
@@ -21,6 +23,20 @@ var<storage, read> nodes: array<Node64>;
 ///
 // Tracing Structs
 ///
+
+struct TraversalState {
+    node: Node64,
+    // The ray segment to traverse in this node’s coordinate space.
+    start_pos: vec3<f32>,
+    end_pos: vec3<f32>,
+    voxel_size: vec3<f32>,
+    // DDA variables computed for this node:
+    current_voxel: vec3<i32>,
+    direction: vec3<f32>,
+    step: vec3<i32>,
+    tMax: vec3<f32>,
+    tDelta: vec3<f32>,
+}
 
 struct RayHit {
     hit: bool,
@@ -45,6 +61,41 @@ struct ChildNodeRef {
 /// 64Tree Tracing stuff:
 ///
 ///
+
+// Computes the DDA stepping parameters given a starting position, end position, and cell size.
+// fn computeDDAState(start_pos: vec3<f32>, end_pos: vec3<f32>, voxel_size: vec3<f32>) -> TraversalState {
+//     var state: TraversalState;
+//     state.start_pos = start_pos;
+//     state.end_pos = end_pos;
+//     state.voxel_size = voxel_size;
+//     state.direction = normalize(end_pos - start_pos);
+//     state.current_voxel = vec3<i32>(floor(start_pos / voxel_size));
+//     state.step = vec3<i32>(
+//         select(-1, 1, state.direction.x > 0.0),
+//         select(-1, 1, state.direction.y > 0.0),
+//         select(-1, 1, state.direction.z > 0.0)
+//     );
+//     state.tMax = vec3<f32>(
+//         // When moving in the x direction, if the ray is going positive then
+//         // the next boundary is at (floor(x/size)+1)*size; otherwise at floor(x/size)*size.
+//         ((select(floor(start_pos.x / voxel_size.x) + 1.0,
+//                  floor(start_pos.x / voxel_size.x),
+//                  state.direction.x < 0.0) * voxel_size.x) - start_pos.x) / state.direction.x,
+//         ((select(floor(start_pos.y / voxel_size.y) + 1.0,
+//                  floor(start_pos.y / voxel_size.y),
+//                  state.direction.y < 0.0) * voxel_size.y) - start_pos.y) / state.direction.y,
+//         ((select(floor(start_pos.z / voxel_size.z) + 1.0,
+//                  floor(start_pos.z / voxel_size.z),
+//                  state.direction.z < 0.0) * voxel_size.z) - start_pos.z) / state.direction.z
+//     );
+//     state.tDelta = vec3<f32>(
+//         abs(voxel_size.x / state.direction.x),
+//         abs(voxel_size.y / state.direction.y),
+//         abs(voxel_size.z / state.direction.z)
+//     );
+//     // Also save the current node pointer (to be filled in later).
+//     return state;
+// }
 
 // Helper functions for bit manipulation
 fn get_bit(mask: u32, index: u32) -> bool {
@@ -183,7 +234,17 @@ fn is_solid(node: Node64, coord: vec3<i32>) -> bool {
     return get_child_mask(node, index);
 }
 
+
+///////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////
+
 fn traverse_64_tree(ray: Ray) -> RayHit {
+    var steps = 0;
+
+
     var result: RayHit;
     result.hit = false;
     result.distance = 9999999.0;
@@ -193,7 +254,7 @@ fn traverse_64_tree(ray: Ray) -> RayHit {
 
     let bounds = vec3<i32>(4,4,4);
     
-    let root_intersection = ray_box_intersection(ray, -vec3<f32>(VOXEL_SCALE * 0.5), VOXEL_SCALE);
+    let root_intersection = ray_box_intersection(ray, vec3<f32>(0.0), VOXEL_SCALE);
     let root_start = ray.origin + ray.direction * root_intersection.y;
     let root_end = ray.origin + ray.direction * root_intersection.x;
     if (root_intersection.y < root_intersection.x || root_intersection.y < 0.0) {
@@ -203,85 +264,103 @@ fn traverse_64_tree(ray: Ray) -> RayHit {
 
     if (is_leaf(nodes[current_node])){
         return result;
-    } else {
-        let traverse_result: RayHit = traverse_64_node(nodes[current_node], root_start, root_end, vec3<f32>(VOXEL_SCALE / 4.0), bounds);
-        //let traverse_result:RayHit = Sphere_DDA_March(root_start, root_end, vec3<f32>(VOXEL_SCALE / 30.0), bounds);
-        if (traverse_result.hit == true){
-            result.color = traverse_result.color;
-            result.hit = true;
-            result.position = traverse_result.position;
-            return result;
-        }
     }
+
+    
+
+    let traverse_result: RayHit = traverse_64_node(nodes[current_node], root_end, root_start, vec3<f32>(VOXEL_SCALE / 4.0), bounds);
+    //let traverse_result:RayHit = Sphere_DDA_March(root_start, root_end, vec3<f32>(VOXEL_SCALE / 30.0), bounds);
+    if (traverse_result.hit == true){
+        result.color = traverse_result.color;
+        result.hit = true;
+        result.position = traverse_result.position;
+        return result;
+    }
+
+        
+    
     
     return result;
     
 }   
 
+
+
 fn traverse_64_node(node: Node64, start_pos: vec3<f32>, end_pos: vec3<f32>, voxel_size: vec3<f32>, bounds: vec3<i32>) -> RayHit{
+    // Const init
     let STEP_LIMIT = 512;
     var steps_taken = 0;
 
+    // Result Init
     var result: RayHit;
     result.color = vec3<f32>(0.0);
     result.hit = false;
     result.distance = 99999.0;
 
+    // direction and current voxel init
     var direction: vec3<f32> = normalize(vec3<f32>(end_pos - start_pos));
     var current_voxel: vec3<i32> = vec3<i32>(floor(start_pos / voxel_size));
 
+    // step init
     var step: vec3<i32> = vec3<i32>(
     select(-1, 1, direction.x > 0.0),
     select(-1, 1, direction.y > 0.0),
     select(-1, 1, direction.z > 0.0)
     );
 
+    //Tmax init
     var tMax: vec3<f32> = vec3<f32>(
         ((select(floor(start_pos.x / voxel_size.x) + 1.0, floor(start_pos.x / voxel_size.x), direction.x < 0.0) * voxel_size.x) - start_pos.x) / direction.x,
         ((select(floor(start_pos.y / voxel_size.y) + 1.0, floor(start_pos.y / voxel_size.y), direction.y < 0.0) * voxel_size.y) - start_pos.y) / direction.y,
         ((select(floor(start_pos.z / voxel_size.z) + 1.0, floor(start_pos.z / voxel_size.z), direction.z < 0.0) * voxel_size.z) - start_pos.z) / direction.z
     );
 
+    // tdelta init
     var tDelta: vec3<f32> = vec3<f32>(
         abs(voxel_size.x / direction.x),
         abs(voxel_size.y / direction.y),
         abs(voxel_size.z / direction.z)
     );
 
-    var ray_world_coord = vec3<f32>(vec3<f32>(current_voxel) * voxel_size);
-    var ray_dist: f32 = f32(sqrt(((ray_world_coord.x - camera.position.x) * (ray_world_coord.x - camera.position.x)) + ((ray_world_coord.y - camera.position.y) * (ray_world_coord.y - camera.position.y)) + ((ray_world_coord.z - camera.position.z) * (ray_world_coord.z - camera.position.z))));
+    // state init
+    var state: TraversalState;
+    state.current_voxel = vec3<i32>(0);
+    state.direction = direction;
+    state.end_pos = end_pos;
+    state.node = node;
+    state.start_pos = start_pos;
+    state.step = step;
+    state.tDelta = tDelta;
+    state.tMax = tMax;
+    state.voxel_size = voxel_size;
+
+    // stack init
+    var stack_ptr: u32 = 0u;
+    var stack: array<TraversalState, MAX_STACK_SIZE>;
+    stack[stack_ptr] = state;
 
     while(steps_taken < STEP_LIMIT){
-        var node_val: Node64;
         if (within_bounds(current_voxel, bounds)){
 
-            // let node_res = sparse_get_child_at_coord(node, current_voxel);
-            // if (node_res.valid == true) {
-            //     node_val = node_res.node;
-            //     if (is_leaf(node_val)) {
-            //         result.color = node_val.color;
-            //         result.hit = true;
-            //         result.position = vec3<f32>(vec3<f32>(current_voxel) * voxel_size);
-            //         return result;
-            //     }
-            // }
-            
-            // if (is_solid(node, current_voxel)) { //BASIC VERSION
-            //     result.color = vec3<f32>(0.5);
-            //     result.hit = true;
-            //     return result;
-            // }
-
-            if (is_solid(node, current_voxel)) {
-                let node_reference_ref = sparse_get_child_at_coord(node, current_voxel);
+            if (is_solid(state.node, current_voxel)) {
+                let node_reference_ref = sparse_get_child_at_coord(state.node, current_voxel);
                 if (node_reference_ref.valid == true){
                     let node_reference = node_reference_ref.node;
-                    result.color = node_reference.color;
-                    result.hit = true;
-                    return result;
+                    if is_leaf(node_reference) {
+                        result.color = node_reference.color;
+                        result.hit = true;
+                        return result;
+                    } else {
+                        state.node = node_reference;
+                        let ray = Ray(start_pos, direction);
+                        let child_intersection = ray_box_intersection(ray, vec3<f32>(current_voxel), voxel_size.x);
+
+                        
+                    }
+
+
                 }
             }
-
         }
 
         
@@ -366,19 +445,6 @@ fn generate_ray_direction(
     let ray_dir = normalize(camera_orientation.cameraFront + x * camera_orientation.cameraRight + y * camera_orientation.cameraUp);
 
     return ray_dir;
-}
-
-fn ray_sphere_intersection(rayOrigin: vec3<f32>, rayDir: vec3<f32>, radius: f32) -> bool {
-    let oc = rayOrigin; // Ray origin is the camera position, here we assume it's at (0,0,0)
-    let a = dot(rayDir, rayDir); // Ray direction dot product with itself
-    let b = 2.0 * dot(oc, rayDir); // Ray origin dot product with ray direction
-    let c = dot(oc, oc) - radius * radius; // The distance from the ray origin to the sphere's surface
-
-    // Calculate discriminant
-    let discriminant = b * b - 4.0 * a * c;
-
-    // If discriminant is non-negative, there's an intersection
-    return discriminant >= 0.0;
 }
 
 fn compute_camera_orientation(yaw: f32, pitch: f32) -> CameraOrientation {
